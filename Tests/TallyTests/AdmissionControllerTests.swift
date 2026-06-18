@@ -96,7 +96,7 @@ struct ChallengeServiceTests {
 
     @Test("Verify accepts a correct solution and rejects a wrong one")
     func testVerifyAcceptReject() {
-        var service = ChallengeService(config: TallyConfig(challengeDifficulty: 4))
+        var service = ChallengeService(config: TallyConfig(challengeDifficulty: 16))
         let peer = PeerID(publicKey: "service")
         let challenge = service.issue(for: peer)
         let solution = ChallengeSolver().solve(challenge)

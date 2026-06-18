@@ -17,7 +17,7 @@ struct ChallengeTests {
     @Test("Wrong solution fails verification")
     func testWrongSolution() {
         let peer = PeerID(publicKey: "solver")
-        let challenge = Challenge(boundPeer: peer, difficulty: 8)
+        let challenge = Challenge(boundPeer: peer, difficulty: 16)
         let badSolution = Data("not-a-solution".utf8)
         #expect(challenge.verify(solution: badSolution, peer: peer) == false)
     }
@@ -66,7 +66,7 @@ struct ChallengeTests {
 
     @Test("Failed challenge does not credit peer")
     func testFailedChallenge() {
-        let tally = Tally(config: TallyConfig(challengeDifficulty: 8))
+        let tally = Tally(config: TallyConfig(challengeDifficulty: 16))
         let peer = PeerID(publicKey: "cheat")
 
         let challenge = tally.issueChallenge(for: peer)

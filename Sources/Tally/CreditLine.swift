@@ -18,7 +18,10 @@ public struct CreditLine: Sendable {
     }
 
     public static func initialThreshold(baseTrust: Double, multiplier: UInt64 = 100) -> UInt64 {
-        UInt64(baseTrust * Double(multiplier))
+        guard baseTrust.isFinite, baseTrust > 0 else { return 0 }
+        guard baseTrust < 1 else { return multiplier }
+        let scaled = baseTrust * Double(multiplier)
+        return scaled >= Double(UInt64.max) ? .max : UInt64(scaled)
     }
 
     public var needsSettlement: Bool {
@@ -46,27 +49,40 @@ public struct CreditLine: Sendable {
     }
 
     public mutating func adjustBalance(by amount: Int64) {
-        balance += amount
-        sequence += 1
+        let (updated, overflow) = balance.addingReportingOverflow(amount)
+        balance = overflow ? (amount >= 0 ? .max : .min) : updated
+        Self.increment(&sequence)
     }
 
     public mutating func recordSettlement() {
         balance = 0
-        successfulSettlements += 1
-        let initial = threshold / UInt64(1 + log2(Double(successfulSettlements)))
-        threshold = initial * UInt64(1 + log2(Double(successfulSettlements + 1)))
+        Self.increment(&successfulSettlements)
+        let currentScale = Self.settlementScale(successfulSettlements)
+        let nextScale = Self.settlementScale(successfulSettlements == .max ? .max : successfulSettlements + 1)
+        let initial = threshold / currentScale
+        let (updated, overflow) = initial.multipliedReportingOverflow(by: nextScale)
+        threshold = overflow ? .max : updated
     }
 
     public mutating func recordPartialSettlement(workValue: Int64) {
+        guard workValue > 0 else { return }
         if balance > 0 {
             balance = max(0, balance - workValue)
         } else {
             balance = min(0, balance + workValue)
         }
-        sequence += 1
+        Self.increment(&sequence)
     }
 
     public mutating func recordMissedSettlement() {
         threshold = threshold / 2
+    }
+
+    private static func settlementScale(_ count: UInt64) -> UInt64 {
+        UInt64(1 + log2(Double(count)))
+    }
+
+    private static func increment(_ value: inout UInt64) {
+        if value < .max { value += 1 }
     }
 }

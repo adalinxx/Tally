@@ -1,12 +1,6 @@
 import Foundation
 
-/// Per-peer token buckets + global rate pressure.
-///
-/// Holds the admission/rate-limiting state that was previously inlined in
-/// `Tally.State`: per-peer request buckets and the global send-byte window.
-/// Decisions are intentionally fail-closed for unknown peers — a new peer gets
-/// a fresh bucket (full capacity) but is still subject to global pressure and,
-/// under pressure, to a reputation gate driven by the caller.
+/// Per-peer token buckets and global send-rate pressure.
 struct AdmissionController: Sendable {
     let config: TallyConfig
 
@@ -36,15 +30,15 @@ struct AdmissionController: Sendable {
         requestBuckets.removeValue(forKey: peer)
     }
 
-    /// Record raw (un-distance-scaled) sent bytes into the global rate window.
-    mutating func recordWindowByte(_ bytes: Int, at now: ContinuousClock.Instant) {
+    /// Record raw sent bytes into the global rate window.
+    mutating func recordSentBytes(_ bytes: Int, at now: ContinuousClock.Instant) {
         let elapsed = windowStart.duration(to: now)
         let elapsedSec = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
         if elapsedSec >= config.rateWindow {
             windowBytesSent = bytes
             windowStart = now
         } else {
-            windowBytesSent += bytes
+            windowBytesSent.addSaturating(bytes)
         }
     }
 
@@ -57,20 +51,16 @@ struct AdmissionController: Sendable {
             windowStart = now
             return 0
         }
-        let effectiveWindow = max(elapsedSec, 0.001)
-        let currentRate = Double(windowBytesSent) / effectiveWindow
-        return min(currentRate / config.rateLimitBytesPerSecond, 2.0)
+        let windowBudget = config.rateLimitBytesPerSecond * config.rateWindow
+        return min(Double(windowBytesSent) / windowBudget, 2.0)
     }
 
-    /// Whether a peer with the given reputation passes the pressure-scaled gate.
+    /// Whether a peer with the given admission score passes the pressure-scaled gate.
     /// Below 0.5 pressure the caller short-circuits to allow; this covers the
-    /// `pressure >= 0.5` regime where reputation matters.
-    func passesPressureGate(reputation: Double, pressure: Double) -> Bool {
-        if pressure >= 1.0 {
-            return reputation >= 0.8
-        }
-        let threshold = (pressure - 0.5) * 2.0
-        return reputation >= threshold
+    /// `pressure >= 0.5` regime where peer evidence matters.
+    func passesPressureGate(admissionScore: Double, pressure: Double) -> Bool {
+        let threshold = min(max((pressure - 0.5) * 1.6, 0), 0.8)
+        return admissionScore >= threshold
     }
 }
 

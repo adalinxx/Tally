@@ -29,14 +29,14 @@ public actor CreditLineLedger {
     }
 
     public func chargeForRelay(peer: PeerID, amount: Int64) -> Bool {
-        guard var line = lines[peer] else { return false }
+        guard amount > 0, var line = lines[peer] else { return false }
         line.adjustBalance(by: -amount)
         lines[peer] = line
         return true
     }
 
     public func earnFromRelay(peer: PeerID, amount: Int64) {
-        guard var line = lines[peer] else { return }
+        guard amount > 0, var line = lines[peer] else { return }
         line.adjustBalance(by: amount)
         lines[peer] = line
     }

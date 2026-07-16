@@ -1,129 +1,13 @@
 # Tally
 
-A Bitswap-inspired peer reputation and rate limiting module for Swift. Tracks bytes exchanged, latency, success rate, and proof-of-work challenges to compute a composite reputation score per peer. Under load, only high-reputation peers get served.
+Tally is a Swift library for peer-global byte accounting, admission control,
+proof-of-work identity and challenges, and bilateral credit lines.
 
-```swift
-let tally = Tally()
-let peer = PeerID(publicKey: "a1f2e3d...")
-
-tally.recordReceived(peer: peer, bytes: 4096)
-tally.recordSent(peer: peer, bytes: 2048)
-tally.recordLatency(peer: peer, microseconds: 5000)
-tally.recordSuccess(peer: peer)
-
-tally.reputation(for: peer)    // 0.72
-tally.shouldAllow(peer: peer)  // true — good reputation, under rate limit
-```
-
-## How It Works
-
-### Reputation Score
-
-Each peer's reputation is a weighted composite of five factors, clamped to 0.0–1.0:
-
-| Factor | Weight | Measures |
-|--------|--------|----------|
-| **Reciprocity** | 0.2 | `1 / (1 + debtRatio)` — peers who give back score higher |
-| **Latency** | 0.3 | `baseline / (meanLatency + 1)` — fast peers score higher |
-| **Success rate** | 0.4 | `successRate − failureRate²` — reliable peers score higher |
-| **Challenges** | 0.1 | Proof-of-work completions — bootstrapped peers can earn credit |
-| **PoW bonus** | 0.1 | `peer.trailingZeroBits / powBaseline` — costlier identities earn a floor |
-
-The first four factors are summed and clamped to a *behavioral* score; the
-identity PoW bonus is added on top. Reciprocity and the PoW bonus are scaled by a
-`confidence` factor (`min(totalBytesExchanged / exchangeBaseline, 1)`), so a fresh
-peer with no exchange volume can't vault to a high score. See
-[docs/architecture.md](docs/architecture.md) for the exact formula.
-
-### Rate-Aware Gating
-
-Instead of a fixed allow/deny threshold, Tally adapts based on current load:
-
-```
-ratePressure = currentRate / rateLimitBytesPerSecond
-
-pressure < 0.5  →  allow everyone (plenty of capacity)
-pressure 0.5–1.0 →  increasingly selective (reputation must exceed threshold)
-pressure >= 1.0  →  only reputation >= 0.8 gets through
-```
-
-When you're well under your rate limit, even unknown peers get served. As load climbs, Tally progressively gates to high-reputation peers only.
-
-### Proof of Work Challenges
-
-New peers with no exchange history can bootstrap reputation by solving SHA256 proof-of-work challenges:
-
-```swift
-let challenge = tally.issueChallenge(for: peer)
-// peer solves: find `solution` where SHA256(nonce || publicKey || solution) has N leading zero bits
-let verified = tally.verifyChallenge(challenge, solution: peerSolution, peer: peer)
-// verified == true → peer.challengeHardness += difficulty → reputation improves
-```
-
-This provides Sybil resistance — creating many identities is cheap, but earning reputation for each requires real computation.
-
-### Credit Lines
-
-Beyond reputation scoring, Tally provides a **bilateral credit-line ledger** for peers that exchange paid services (relay, retrieval, pinning) and want to settle a *net* balance periodically instead of paying per micro-operation. This is generic infrastructure: Tally tracks the running balance and signals when settlement is due; *how* and *where* a net balance is actually settled is the host application's concern.
-
-`CreditLineLedger` is an `actor`, so its methods are `await`ed:
-
-```swift
-let ledger = CreditLineLedger(localID: me, baseThresholdMultiplier: 100,
-                              minDifficulty: 0, maxDifficulty: 32)
-
-let line = await ledger.establish(with: peer)                  // open a credit line
-await ledger.earnFromRelay(peer: peer, amount: 4096)           // peer owes you for service rendered
-let ok = await ledger.chargeForRelay(peer: peer, amount: 2048) // consume service; true on success
-
-if await ledger.needsSettlement(peer: peer) {                  // net balance crossed the threshold
-    // settle out-of-band (e.g. an on-chain transfer), then:
-    await ledger.recordSettlement(peer: peer)
-}
-await ledger.debtPressure(for: peer)                           // 0.0 (even) … 1.0 (at threshold)
-await ledger.balance(with: peer)                               // signed net balance
-```
-
-The per-peer **threshold** is calibrated by identity cost via `KeyDifficulty.baseTrust` (a peer that paid more proof-of-work to mint its key earns a larger credit extension), bounded by `[minDifficulty, maxDifficulty]`. The ledger tracks the running balance and exposes `debtPressure(for:)` / `needsSettlement(peer:)` for graduated throttling and settlement triggers; `chargeForRelay` returns `false` only when no line exists, so the host enforces back-pressure by consulting debt pressure before extending more service. Partial and missed settlements (`recordPartialSettlement`, `recordMissedSettlement`) feed settlement reliability back into the line's threshold.
-
-| Method (`CreditLineLedger`) | Description |
-|--------|-------------|
-| `establish(with:) -> CreditLine` | Open a credit line with a peer. |
-| `creditLine(for:) -> CreditLine?` | Current line, if any. |
-| `chargeForRelay(peer:amount:) -> Bool` | Consume service against the line; `false` only if no line exists. |
-| `earnFromRelay(peer:amount:)` | Credit service rendered to a peer. |
-| `needsSettlement(peer:) -> Bool` | Net balance crossed the threshold. |
-| `recordSettlement(peer:)` / `recordPartialSettlement(peer:workValue:)` / `recordMissedSettlement(peer:)` | Record settlement outcomes. |
-| `debtPressure(for:) -> Double` · `balance(with:) -> Int64` · `threshold(for:) -> UInt64` | Observe a line. |
-| `allLines -> [PeerID: CreditLine]` · `removeLine(for:) -> CreditLine?` | Enumerate / close lines. |
-
-## Documentation
-
-- [docs/architecture.md](docs/architecture.md) — the load-bearing concepts grounded
-  in code: the reputation score, rate-aware gating, PoW challenges and
-  `KeyDifficulty`, credit lines, and how Tally composes as the trust substrate
-  Ivy calls into. Includes the full public API surface and a component diagram.
-
-## Requirements
-
-- Swift 6.0+
-- macOS 14+ / iOS 17+ / tvOS 17+ / watchOS 10+ / visionOS 1+
-
-## Installation
-
-```swift
-.package(url: "https://github.com/adalinxx/Tally.git", from: "1.0.0"),
-```
-
-Then add to your target:
-
-```swift
-.target(name: "YourTarget", dependencies: ["Tally"])
-```
+Tally deliberately does not track content availability, route or service
+health, generic request outcomes, latency, or DHT proximity. Those signals are
+owned by the protocols and services that can interpret them correctly.
 
 ## Usage
-
-### Recording exchanges
 
 ```swift
 import Tally
@@ -131,130 +15,151 @@ import Tally
 let tally = Tally()
 let peer = PeerID(publicKey: "a1f2e3d4...")
 
-tally.recordSent(peer: peer, bytes: responseData.count)
 tally.recordReceived(peer: peer, bytes: incomingData.count)
-tally.recordLatency(peer: peer, microseconds: elapsed)
-tally.recordSuccess(peer: peer)
-tally.recordFailure(peer: peer)
-tally.recordRequest(peer: peer)
-```
 
-`recordSent` / `recordReceived` take an optional `cpl:` (common-prefix length)
-that distance-scales the bytes credited toward reciprocity — work for "distant"
-keys counts more. The global rate window always uses the raw byte count.
-
-### Gating outbound data
-
-```swift
 if tally.shouldAllow(peer: peer) {
-    let data = fetchData(for: cid)
-    tally.recordSent(peer: peer, bytes: data.count)
-    send(data, to: peer)
-} else {
-    sendDenial(to: peer)
+    send(responseData, to: peer)
+    tally.recordSent(peer: peer, bytes: responseData.count)
 }
 ```
 
-### Proof of work bootstrapping
+Only violations of the protocol that are attributable to the peer belong in
+the admission evidence:
 
 ```swift
-// Server side: issue challenge (bound to the requesting peer)
-let challenge = tally.issueChallenge(for: peer)
-send(challenge, to: peer)
-
-// Client side: solve
-let solver = ChallengeSolver()
-let solution = solver.solve(challenge)
-send(solution, to: server)
-
-// Server side: verify and credit
-tally.verifyChallenge(challenge, solution: solution, peer: peer)
+tally.recordProtocolViolation(peer: peer)
 ```
 
-### Configuration
+An excessive request rate is handled only by the per-peer token bucket inside
+`shouldAllow(peer:)`; it is not recorded as a protocol violation.
+
+## Admission Score
+
+For each peer, Tally keeps four internal decayed values:
+
+- `S`: raw bytes sent
+- `R`: raw bytes received
+- `V`: attributable protocol violations
+- `W`: verified challenge work
+
+All four values share one update time. Before any value is changed or the score
+is observed, every value is multiplied by:
+
+```text
+d = 2^(-elapsed / decayHalfLife)
+```
+
+The admission score is:
+
+```text
+C = min((S + R) / exchangeBaseline, 1)
+Q = (R + 1) / (S + R + 1)
+H = min(W / hardnessBaseline, 1)
+K = min(keyWork(peer) / powBaseline, 1)
+
+score = clamp((0.50*C*Q + 0.25*H + 0.25*C*K) / (1 + V), 0, 1)
+```
+
+An unknown peer scores zero. The absence of violations contributes no positive
+evidence.
+
+`shouldAllow(peer:)` first consumes one token from the peer's request bucket.
+If the bucket allows the request, global send-rate pressure controls the score
+gate:
+
+```text
+pressure < 0.5       allow
+pressure >= 0.5      require score >= min((pressure - 0.5) * 1.6, 0.8)
+```
+
+## Proof Of Work
+
+Interactive challenges are bound to a peer, expire, and can be verified only
+once through `Tally`:
+
+```swift
+let challenge = tally.issueChallenge(for: peer)
+if let solution = ChallengeSolver().solve(challenge) {
+    let accepted = tally.verifyChallenge(challenge, solution: solution, peer: peer)
+}
+```
+
+A successful verification adds the challenge difficulty to `W`.
+`KeyDifficulty.keyWorkBits(_:)` supplies the canonical identity-work measure
+used by the score. `KeyDifficulty` also retains its lower-level key difficulty
+and base-trust APIs.
+
+## Credit Lines
+
+`CreditLine` and the `CreditLineLedger` actor provide bilateral balance and
+settlement accounting independently of admission state:
+
+```swift
+let ledger = CreditLineLedger(localID: localPeer)
+await ledger.establish(with: peer)
+await ledger.earnFromRelay(peer: peer, amount: 4096)
+
+if await ledger.needsSettlement(peer: peer) {
+    await ledger.recordSettlement(peer: peer)
+}
+```
+
+The host owns service policy and settlement execution. Tally only maintains the
+line, its balance, threshold, and settlement history.
+
+## Configuration
 
 ```swift
 let tally = Tally(config: TallyConfig(
-    weights: ReputationWeights(
-        reciprocity: 0.2,
-        latency: 0.3,
-        successRate: 0.4,
-        challenges: 0.1,
-        pow: 0.1
-    ),
-    latencyBaseline: 100_000,          // microseconds
-    decayHalfLife: 3600,               // seconds to halve exchange counters
-    challengeDifficulty: 16,           // leading zero bits
+    decayHalfLife: 3600,
+    challengeDifficulty: 16,
+    challengeExpiration: .seconds(30),
     rateLimitBytesPerSecond: 10_000_000,
-    rateWindow: 1.0,                   // seconds
-    perPeerRequestCapacity: 200,       // token-bucket size
+    rateWindow: 1,
+    perPeerRequestCapacity: 200,
     perPeerRequestRefillPerSecond: 50,
+    hardnessBaseline: 160,
+    exchangeBaseline: 100_000,
+    powBaseline: 16,
     maxPeers: 10_000
 ))
 ```
 
-### Observability
+Rates, windows, half-lives, baselines, and capacities must be finite and
+positive. Request refill may be zero, and challenge difficulty is `0...256`.
+
+## Tally API
+
+| API | Purpose |
+|-----|---------|
+| `init(config:)` | Create an instance with admission and challenge tuning. |
+| `recordSent(peer:bytes:)` | Record raw bytes sent and feed global rate pressure. |
+| `recordReceived(peer:bytes:)` | Record raw bytes received. |
+| `recordProtocolViolation(peer:)` | Record one attributable protocol violation. |
+| `shouldAllow(peer:) -> Bool` | Apply the request bucket and pressure-sensitive score gate. |
+| `admissionScore(for:) -> Double` | Return the peer's decayed score, or zero if unknown. |
+| `ratePressure() -> Double` | Return current global send-rate pressure. |
+| `resetPeer(_:)` | Remove evidence, request tokens, and outstanding challenges for a peer. |
+| `peerCount -> Int` | Number of peers with admission evidence. |
+| `metrics -> TallyMetrics` | Snapshot aggregate byte, admission, and challenge counters. |
+| `issueChallenge(for:) -> Challenge` | Issue a peer-bound proof-of-work challenge. |
+| `verifyChallenge(_:solution:peer:) -> Bool` | Verify one outstanding challenge and credit its work. |
+
+See [docs/architecture.md](docs/architecture.md) for component details. Public
+`PeerID`, `Challenge`, `ChallengeSolver`, `KeyDifficulty`, `CreditLine`, and
+`CreditLineLedger` APIs are retained alongside the `Tally` facade.
+
+## Installation
 
 ```swift
-tally.reputation(for: peer)
-tally.debtRatio(for: peer)
-tally.peerLedger(for: peer)
-tally.ratePressure()
-
-let m = tally.metrics
-// m.allowed, m.denied, m.totalBytesSent, m.totalBytesReceived
-// m.challengesIssued, m.challengesVerified
+.package(url: "https://github.com/adalinxx/Tally.git", from: "3.0.0")
 ```
 
-## API
+Tally requires Swift 6.0 and depends on `swift-crypto` for SHA-256.
 
-| Method | Description |
-|--------|-------------|
-| `recordSent(peer:bytes:cpl:)` | Record bytes sent to a peer (increases debt). |
-| `recordReceived(peer:bytes:cpl:)` | Record bytes received from a peer (credits them). |
-| `recordLatency(peer:microseconds:)` | Record response latency for a peer. |
-| `recordSuccess(peer:)` | Record a successful interaction. |
-| `recordFailure(peer:)` | Record a failed interaction. |
-| `recordRequest(peer:)` | Increment request count. |
-| `shouldAllow(peer:) -> Bool` | Rate-aware + reputation-based allow/deny. |
-| `reputation(for:) -> Double` | Composite reputation score (0.0–1.0). |
-| `debtRatio(for:) -> Double` | Raw debt ratio for a peer. |
-| `ratePressure() -> Double` | Current rate pressure (0.0 = idle, 1.0 = at limit). |
-| `issueChallenge(for:) -> Challenge` | Create a proof-of-work challenge bound to a peer. |
-| `verifyChallenge(_:solution:peer:) -> Bool` | Verify and credit a solved challenge. |
-| `peerLedger(for:) -> PeerLedger?` | Full ledger for a peer. |
-| `allPeers() -> [PeerID]` | All tracked peer IDs. |
-| `peerCount -> Int` | Number of tracked peers. |
-| `resetPeer(_:)` | Remove a peer's ledger. |
-| `metrics -> TallyMetrics` | Aggregate stats. |
-
-## Design
-
-- **Lock-based, no actor** — all state behind `OSAllocatedUnfairLock` for nanosecond-scale operations.
-- **Bitswap debt ratio** — `r = bytes_sent / (bytes_received + 1)`, same formula as IPFS.
-- **Composite reputation** — weighted blend of reciprocity, latency, success rate, solved challenges, and identity proof-of-work.
-- **Rate-aware gating** — permissive when idle, selective under load.
-- **SHA256 proof of work** — Sybil-resistant reputation bootstrapping for new peers (challenge difficulty), plus a trust floor from identity key difficulty.
-- **Bilateral credit lines** — a net-balance ledger with PoW-calibrated thresholds; Tally signals when settlement is due, settlement itself is the host's concern.
-- **Minimal dependencies** — Foundation plus swift-crypto (`Crypto`) for SHA-256.
-
-## Performance
-
-Benchmarked on Apple Silicon (M-series), release mode:
-
-| Operation | Time | Notes |
-|-----------|------|-------|
-| shouldAllow (fresh peer) | **48ns** | Lock + dictionary miss + rate check |
-| shouldAllow (known peer) | **69ns** | Lock + lookup + reputation + rate check |
-| reputation lookup | **33ns** | Lock + lookup + weighted score |
-| recordSent | **89ns** | Lock + lookup + update + rate window |
-| recordLatency | **54ns** | Lock + lookup + running stats |
-| mixed (80% check / 20% record) | **81ns** | Realistic workload |
-
-## Testing
+## Verification
 
 ```bash
 swift test
+swift run -c release TallyBenchmarks
 ```
-
-74 tests across 7 suites: PeerLedger (debt ratio, reciprocity, success rate, latency scoring, reputation composition, custom weights), Tally (recording, gating, metrics, rate pressure, peer management), AdmissionController (token buckets, rate pressure, pressure gate), Challenge (solving, verification, accumulation, reputation bootstrapping), ChallengeService (issue/verify, expiry, peer binding), ReputationScorer (decay, scoring), and CreditLine (thresholds, settlement, debt pressure).

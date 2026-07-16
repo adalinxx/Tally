@@ -1,7 +1,4 @@
 public struct TallyConfig: Sendable {
-    public let weights: ReputationWeights
-    public let latencyBaseline: Double
-    public let latencyAlpha: Double
     public let decayHalfLife: Double
     public let challengeDifficulty: Int
     public let challengeExpiration: Duration
@@ -15,9 +12,6 @@ public struct TallyConfig: Sendable {
     public let maxPeers: Int?
 
     public init(
-        weights: ReputationWeights = .default,
-        latencyBaseline: Double = 100_000,
-        latencyAlpha: Double = 0.3,
         decayHalfLife: Double = 3600,
         challengeDifficulty: Int = 16,
         challengeExpiration: Duration = .seconds(30),
@@ -30,9 +24,23 @@ public struct TallyConfig: Sendable {
         powBaseline: Int = 16,
         maxPeers: Int? = nil
     ) {
-        self.weights = weights
-        self.latencyBaseline = latencyBaseline
-        self.latencyAlpha = latencyAlpha
+        precondition(decayHalfLife.isFinite && decayHalfLife > 0, "decayHalfLife must be finite and positive")
+        precondition((0...256).contains(challengeDifficulty), "challengeDifficulty must be between 0 and 256")
+        precondition(challengeExpiration > .zero, "challengeExpiration must be positive")
+        precondition(rateLimitBytesPerSecond.isFinite && rateLimitBytesPerSecond > 0, "rateLimitBytesPerSecond must be finite and positive")
+        precondition(rateWindow.isFinite && rateWindow > 0, "rateWindow must be finite and positive")
+        precondition(
+            (rateLimitBytesPerSecond * rateWindow).isFinite
+                && rateLimitBytesPerSecond * rateWindow > 0,
+            "rate limit window budget must be finite and positive"
+        )
+        precondition(perPeerRequestCapacity.isFinite && perPeerRequestCapacity >= 1, "perPeerRequestCapacity must be finite and at least one")
+        precondition(perPeerRequestRefillPerSecond.isFinite && perPeerRequestRefillPerSecond >= 0, "perPeerRequestRefillPerSecond must be finite and non-negative")
+        precondition(hardnessBaseline > 0, "hardnessBaseline must be positive")
+        precondition(exchangeBaseline.isFinite && exchangeBaseline > 0, "exchangeBaseline must be finite and positive")
+        precondition(powBaseline > 0, "powBaseline must be positive")
+        precondition(maxPeers.map { $0 > 0 } ?? true, "maxPeers must be positive")
+
         self.decayHalfLife = decayHalfLife
         self.challengeDifficulty = challengeDifficulty
         self.challengeExpiration = challengeExpiration

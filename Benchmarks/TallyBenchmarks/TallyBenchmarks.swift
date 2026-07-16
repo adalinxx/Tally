@@ -35,8 +35,6 @@ struct TallyBenchmarks {
             let peer = PeerID(publicKey: "known")
             tally.recordReceived(peer: peer, bytes: 1000)
             tally.recordSent(peer: peer, bytes: 500)
-            for _ in 0..<5 { tally.recordSuccess(peer: peer) }
-            tally.recordLatency(peer: peer, microseconds: 5000)
             var timings: [Double] = []
             for _ in 0..<samples {
                 let start = clock.now
@@ -50,25 +48,23 @@ struct TallyBenchmarks {
             results.append(BenchmarkResult(name: "shouldAllow (known)", iterations: opsPerSample, samples: timings))
         }
 
-        // --- reputation lookup ---
+        // --- admission score ---
         do {
             let tally = Tally()
-            let peer = PeerID(publicKey: "rep-peer")
+            let peer = PeerID(publicKey: "score-peer")
             tally.recordSent(peer: peer, bytes: 5000)
             tally.recordReceived(peer: peer, bytes: 2500)
-            for _ in 0..<10 { tally.recordSuccess(peer: peer) }
-            tally.recordLatency(peer: peer, microseconds: 10000)
             var timings: [Double] = []
             for _ in 0..<samples {
                 let start = clock.now
                 for _ in 0..<opsPerSample {
-                    _ = tally.reputation(for: peer)
+                    _ = tally.admissionScore(for: peer)
                 }
                 let elapsed = start.duration(to: clock.now)
                 let us = Double(elapsed.components.attoseconds) / 1e12 + Double(elapsed.components.seconds) * 1e6
                 timings.append(us / Double(opsPerSample))
             }
-            results.append(BenchmarkResult(name: "reputation", iterations: opsPerSample, samples: timings))
+            results.append(BenchmarkResult(name: "admissionScore", iterations: opsPerSample, samples: timings))
         }
 
         // --- recordSent ---
@@ -88,22 +84,21 @@ struct TallyBenchmarks {
             results.append(BenchmarkResult(name: "recordSent", iterations: opsPerSample, samples: timings))
         }
 
-        // --- recordLatency ---
+        // --- recordProtocolViolation ---
         do {
             var timings: [Double] = []
             for _ in 0..<samples {
                 let tally = Tally()
-                let peer = PeerID(publicKey: "lat-peer")
-                tally.recordRequest(peer: peer)
+                let peer = PeerID(publicKey: "violation-peer")
                 let start = clock.now
                 for _ in 0..<opsPerSample {
-                    tally.recordLatency(peer: peer, microseconds: 5000)
+                    tally.recordProtocolViolation(peer: peer)
                 }
                 let elapsed = start.duration(to: clock.now)
                 let us = Double(elapsed.components.attoseconds) / 1e12 + Double(elapsed.components.seconds) * 1e6
                 timings.append(us / Double(opsPerSample))
             }
-            results.append(BenchmarkResult(name: "recordLatency", iterations: opsPerSample, samples: timings))
+            results.append(BenchmarkResult(name: "recordProtocolViolation", iterations: opsPerSample, samples: timings))
         }
 
         // --- mixed (80% check / 20% record) ---
@@ -117,8 +112,6 @@ struct TallyBenchmarks {
                     peers.append(p)
                     tally.recordSent(peer: p, bytes: 500)
                     tally.recordReceived(peer: p, bytes: 300)
-                    tally.recordSuccess(peer: p)
-                    tally.recordLatency(peer: p, microseconds: 10000)
                 }
                 let start = clock.now
                 for i in 0..<opsPerSample {

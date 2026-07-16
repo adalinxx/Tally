@@ -92,6 +92,7 @@ public struct Tally: Sendable {
     }
 
     public func recordLatency(peer: PeerID, microseconds: Double) {
+        guard Self.isValidLatency(microseconds) else { return }
         _state.withLock { state in
             let now = ContinuousClock.now
             guard var ledger = state.ledger(for: peer) else { return }
@@ -100,6 +101,65 @@ public struct Tally: Sendable {
             ledger.markStale()
             state.storeLedger(ledger, for: peer, at: now, scorer: scorer)
         }
+    }
+
+    func recordServiceSuccess(peer: PeerID, latencyMicroseconds: Double?) {
+        recordCategorizedOutcome(peer: peer) { ledger in
+            ledger.successCount.add(1)
+            ledger.serviceSuccessCount.add(1)
+            if let latencyMicroseconds, Self.isValidLatency(latencyMicroseconds) {
+                ledger.latencyEWMA.record(latencyMicroseconds)
+            }
+        }
+    }
+
+    func recordRouteSuccess(peer: PeerID, latencyMicroseconds: Double?) {
+        recordCategorizedOutcome(peer: peer) { ledger in
+            ledger.successCount.add(1)
+            ledger.routeSuccessCount.add(1)
+            if let latencyMicroseconds, Self.isValidLatency(latencyMicroseconds) {
+                ledger.latencyEWMA.record(latencyMicroseconds)
+            }
+        }
+    }
+
+    func recordProtocolFailure(peer: PeerID) {
+        recordCategorizedOutcome(peer: peer) { ledger in
+            ledger.failureCount.add(1)
+            ledger.protocolFailureCount.add(1)
+        }
+    }
+
+    func recordServiceFailure(peer: PeerID) {
+        recordCategorizedOutcome(peer: peer) { ledger in
+            ledger.failureCount.add(1)
+            ledger.serviceFailureCount.add(1)
+        }
+    }
+
+    func recordRouteFailure(peer: PeerID) {
+        recordCategorizedOutcome(peer: peer) { ledger in
+            ledger.failureCount.add(1)
+            ledger.routeFailureCount.add(1)
+        }
+    }
+
+    private func recordCategorizedOutcome(
+        peer: PeerID,
+        update: @Sendable (inout PeerLedger) -> Void
+    ) {
+        _state.withLock { state in
+            let now = ContinuousClock.now
+            var ledger = state.ledger(for: peer) ?? PeerLedger(now: now, latencyAlpha: config.latencyAlpha)
+            update(&ledger)
+            ledger.lastSeen = now
+            ledger.markStale()
+            state.storeLedger(ledger, for: peer, at: now, scorer: scorer)
+        }
+    }
+
+    private static func isValidLatency(_ microseconds: Double) -> Bool {
+        microseconds.isFinite && microseconds >= 0
     }
 
     // MARK: - Gating (decay lazily on read path only)
@@ -183,6 +243,23 @@ public struct Tally: Sendable {
             let ratio = scorer.debtRatio(&ledger, at: .now)
             state.storeLedger(ledger, for: peer, at: .now, scorer: scorer)
             return ratio
+        }
+    }
+
+    /// Return one decayed quality view without conflating protocol, service, and
+    /// route observations. Unknown peers are neutral so they can be sampled.
+    public func quality(_ quality: PeerQuality, for peer: PeerID) -> Double {
+        _state.withLock { state in
+            guard var ledger = state.ledger(for: peer) else { return 0.5 }
+            let now = ContinuousClock.now
+            ledger.decay(to: now, halfLife: config.decayHalfLife)
+            let value = switch quality {
+            case .protocolCorrectness: ledger.protocolCorrectness
+            case .serviceReliability: ledger.serviceReliability
+            case .routeReliability: ledger.routeReliability
+            }
+            state.storeLedger(ledger, for: peer, at: now, scorer: scorer)
+            return value
         }
     }
 

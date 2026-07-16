@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-> **Project:** Tally — a Swift library for peer reputation, rate-aware gating, SHA-256 proof-of-work challenges, and bilateral credit-line accounting. Standalone and domain-agnostic; Lattice is one consumer, not a dependency. Build/test: `swift build` / `swift test`.
+> **Project:** Tally - a Swift library for peer-global byte accounting, admission/rate limiting, attributable protocol violations, SHA-256 proof-of-work identity and challenges, and bilateral credit-line accounting. Standalone and domain-agnostic; Lattice is one consumer, not a dependency. Build/test: `swift build` / `swift test`.
 
 Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
 

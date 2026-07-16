@@ -2,9 +2,7 @@ import Foundation
 
 /// Issues PoW challenges and verifies solutions.
 ///
-/// Verification consumes one outstanding nonce on a valid solution; on success
-/// the caller credits the peer's challenge hardness. Extracted from `Tally` to
-/// isolate the challenge concern from reputation and admission.
+/// Verification consumes one outstanding nonce on a valid solution.
 struct ChallengeService: Sendable {
     let config: TallyConfig
     private var outstandingNonces: BoundedMap<Data, OutstandingChallenge>
@@ -47,6 +45,12 @@ struct ChallengeService: Sendable {
 
         outstandingNonces.removeValue(forKey: challenge.nonce)
         return true
+    }
+
+    mutating func removeChallenges(for peer: PeerID) {
+        outstandingNonces.removeAll { _, challenge in
+            challenge.boundPeer == peer
+        }
     }
 
     var outstandingCount: Int {

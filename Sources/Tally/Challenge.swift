@@ -9,6 +9,9 @@ public struct Challenge: Sendable {
     public let expiresAfter: Duration
 
     public init(boundPeer: PeerID, difficulty: Int = 16, expiresAfter: Duration = .seconds(30)) {
+        precondition((0...256).contains(difficulty), "difficulty must be between 0 and 256")
+        precondition(expiresAfter > .zero, "expiresAfter must be positive")
+
         var bytes = [UInt8](repeating: 0, count: 32)
         for i in 0..<bytes.count {
             bytes[i] = UInt8.random(in: 0...255)
@@ -27,6 +30,9 @@ public struct Challenge: Sendable {
         issuedAt: ContinuousClock.Instant = .now,
         expiresAfter: Duration = .seconds(30)
     ) {
+        precondition((0...256).contains(difficulty), "difficulty must be between 0 and 256")
+        precondition(expiresAfter > .zero, "expiresAfter must be positive")
+
         self.nonce = nonce
         self.boundPeer = boundPeer
         self.difficulty = difficulty
@@ -45,6 +51,10 @@ public struct Challenge: Sendable {
     func verify(solution: Data, peer: PeerID, at now: ContinuousClock.Instant) -> Bool {
         guard boundPeer == peer else { return false }
         guard !isExpired(at: now) else { return false }
+        return meetsTarget(solution: solution)
+    }
+
+    func meetsTarget(solution: Data) -> Bool {
         var input = nonce
         input.append(Data(boundPeer.publicKey.utf8))
         input.append(solution)
@@ -73,14 +83,16 @@ public struct Challenge: Sendable {
 public struct ChallengeSolver: Sendable {
     public init() {}
 
-    public func solve(_ challenge: Challenge) -> Data {
+    public func solve(_ challenge: Challenge) -> Data? {
         var counter: UInt64 = 0
-        while true {
+        while !challenge.isExpired {
             let solution = withUnsafeBytes(of: &counter) { Data($0) }
-            if challenge.verify(solution: solution, peer: challenge.boundPeer) {
+            if challenge.meetsTarget(solution: solution) {
                 return solution
             }
+            guard counter < .max else { return nil }
             counter += 1
         }
+        return nil
     }
 }

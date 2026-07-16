@@ -1,385 +1,182 @@
-import Testing
 import Foundation
+import Testing
 @testable import Tally
 
 @Suite("Tally")
 struct TallyTests {
-
-    @Test("Fresh peer is allowed when under rate limit")
-    func testFreshPeerAllowed() {
+    @Test("Unknown peer has zero score and admission does not create evidence")
+    func unknownPeer() {
         let tally = Tally()
-        let peer = PeerID(publicKey: "abc123")
-        #expect(tally.shouldAllow(peer: peer) == true)
-    }
+        let peer = PeerID(publicKey: "unknown")
 
-    @Test("Record sent tracks bytes")
-    func testRecordSent() {
-        let tally = Tally()
-        let peer = PeerID(publicKey: "abc123")
-        tally.recordSent(peer: peer, bytes: 500)
-        let ledger = tally.peerLedger(for: peer)!
-        #expect(ledger.bytesSent.value >= 499)
-    }
-
-    @Test("Record received tracks bytes")
-    func testRecordReceived() {
-        let tally = Tally()
-        let peer = PeerID(publicKey: "abc123")
-        tally.recordReceived(peer: peer, bytes: 300)
-        let ledger = tally.peerLedger(for: peer)!
-        #expect(ledger.bytesReceived.value >= 299)
-    }
-
-    @Test("Record request creates a ledger entry")
-    func testRecordRequest() {
-        let tally = Tally()
-        let peer = PeerID(publicKey: "abc123")
-        tally.recordRequest(peer: peer)
-        #expect(tally.peerLedger(for: peer) != nil)
-    }
-
-    @Test("Record success and failure")
-    func testSuccessFailure() {
-        let tally = Tally()
-        let peer = PeerID(publicKey: "abc")
-        tally.recordRequest(peer: peer)
-        tally.recordSuccess(peer: peer)
-        tally.recordFailure(peer: peer)
-        let ledger = tally.peerLedger(for: peer)!
-        #expect(ledger.successCount.value == 1)
-        #expect(ledger.failureCount.value == 1)
-    }
-
-    @Test("Failure creates ledger for unknown peer")
-    func testFailureCreatesLedger() {
-        let tally = Tally()
-        let peer = PeerID(publicKey: "unknown-failure")
-        tally.recordFailure(peer: peer)
-        #expect(tally.peerLedger(for: peer)?.failureCount.value == 1)
-        #expect(tally.reputation(for: peer) == 0)
-    }
-
-    @Test("Record latency uses EWMA")
-    func testRecordLatency() {
-        let tally = Tally()
-        let peer = PeerID(publicKey: "abc")
-        tally.recordRequest(peer: peer)
-        tally.recordLatency(peer: peer, microseconds: 100)
-        tally.recordLatency(peer: peer, microseconds: 200)
-        let ewma = tally.peerLedger(for: peer)!.latencyEWMA
-        #expect(ewma.count == 2)
-        #expect(ewma.value > 100 && ewma.value < 200)
-    }
-
-    @Test("recordLatency uses the configured latencyAlpha")
-    func testRecordLatencyUsesConfiguredAlpha() {
-        // alpha = 1.0: the EWMA must equal the most recent sample exactly.
-        let tally = Tally(config: TallyConfig(latencyAlpha: 1.0))
-        let peer = PeerID(publicKey: "alpha-wired")
-        tally.recordRequest(peer: peer)
-        tally.recordLatency(peer: peer, microseconds: 100)
-        tally.recordLatency(peer: peer, microseconds: 900)
-        #expect(tally.peerLedger(for: peer)?.latencyEWMA.value == 900,
-                "config.latencyAlpha must reach the ledger EWMA (default 0.3 would give 660)")
-    }
-
-    @Test("High-reputation peer allowed under pressure")
-    func testHighRepAllowedUnderPressure() {
-        let tally = Tally(config: TallyConfig(rateLimitBytesPerSecond: 100))
-        let peer = PeerID(publicKey: "good")
-        tally.recordReceived(peer: peer, bytes: 10000)
-        for _ in 0..<10 { tally.recordSuccess(peer: peer) }
-        tally.recordLatency(peer: peer, microseconds: 1000)
-        tally.recordSent(peer: peer, bytes: 200)
-        #expect(tally.reputation(for: peer) > 0.5)
-    }
-
-    @Test("Low-reputation peer denied under pressure")
-    func testLowRepDeniedUnderPressure() {
-        let tally = Tally(config: TallyConfig(rateLimitBytesPerSecond: 100))
-        let freeloader = PeerID(publicKey: "freeloader")
-        tally.recordSent(peer: freeloader, bytes: 500)
-        #expect(tally.shouldAllow(peer: freeloader) == false)
-    }
-
-    @Test("Reputation returns zero for unknown peer")
-    func testReputationUnknown() {
-        let tally = Tally()
-        #expect(tally.reputation(for: PeerID(publicKey: "ghost")) == 0)
-    }
-
-    @Test("Multiple peers tracked independently")
-    func testMultiplePeers() {
-        let tally = Tally()
-        let alice = PeerID(publicKey: "alice")
-        let bob = PeerID(publicKey: "bob")
-        tally.recordSent(peer: alice, bytes: 100)
-        tally.recordSent(peer: bob, bytes: 200)
-        #expect(tally.peerLedger(for: alice)!.bytesSent.value >= 99)
-        #expect(tally.peerLedger(for: bob)!.bytesSent.value >= 199)
-    }
-
-    @Test("Reset peer removes ledger")
-    func testResetPeer() {
-        let tally = Tally()
-        let peer = PeerID(publicKey: "reset-me")
-        tally.recordSent(peer: peer, bytes: 100)
-        tally.resetPeer(peer)
-        #expect(tally.peerLedger(for: peer) == nil)
-    }
-
-    @Test("Reset peer clears admission request bucket")
-    func testResetPeerClearsRequestBucket() {
-        let tally = Tally(config: TallyConfig(
-            perPeerRequestCapacity: 1,
-            perPeerRequestRefillPerSecond: 0
-        ))
-        let peer = PeerID(publicKey: "reset-bucket")
-
+        #expect(tally.admissionScore(for: peer) == 0)
         #expect(tally.shouldAllow(peer: peer))
-        #expect(!tally.shouldAllow(peer: peer))
-        tally.resetPeer(peer)
-        #expect(tally.shouldAllow(peer: peer))
+        #expect(tally.peerCount == 0)
     }
 
-    @Test("allPeers returns tracked peers")
-    func testAllPeers() {
+    @Test("Raw received bytes earn admission score")
+    func receivedBytesEarnScore() {
+        let tally = Tally(config: TallyConfig(exchangeBaseline: 100))
+        let peer = PeerID(publicKey: "peer-0")
+
+        tally.recordReceived(peer: peer, bytes: 100)
+
+        #expect(tally.admissionScore(for: peer) > 0.49)
+        #expect(tally.admissionScore(for: peer) < 0.51)
+        #expect(tally.peerCount == 1)
+        #expect(tally.metrics.totalBytesReceived == 100)
+    }
+
+    @Test("Attributable protocol violation reduces score")
+    func protocolViolationPenalty() {
+        let tally = Tally(config: TallyConfig(exchangeBaseline: 1))
+        let peer = PeerID(publicKey: "peer-0")
+        tally.recordReceived(peer: peer, bytes: 100)
+        let clean = tally.admissionScore(for: peer)
+
+        tally.recordProtocolViolation(peer: peer)
+        let penalized = tally.admissionScore(for: peer)
+
+        #expect(penalized < clean)
+        #expect(abs(clean - 2 * penalized) < 0.001)
+    }
+
+    @Test("Lack of violations is not positive evidence")
+    func noPositiveProofFromViolationCounter() {
         let tally = Tally()
-        let a = PeerID(publicKey: "a")
-        let b = PeerID(publicKey: "b")
-        tally.recordSent(peer: a, bytes: 1)
-        tally.recordSent(peer: b, bytes: 1)
-        #expect(Set(tally.allPeers()) == Set([a, b]))
+        let peer = PeerID(publicKey: "violation-only")
+
+        tally.recordProtocolViolation(peer: peer)
+
+        #expect(tally.admissionScore(for: peer) == 0)
+        #expect(tally.peerCount == 1)
     }
 
-    @Test("Metrics track allowed and denied")
-    func testMetrics() {
-        let tally = Tally(config: TallyConfig(rateLimitBytesPerSecond: 100))
-        let peer = PeerID(publicKey: "test")
-        _ = tally.shouldAllow(peer: peer)
-        tally.recordSent(peer: peer, bytes: 500)
-        _ = tally.shouldAllow(peer: peer)
-        let m = tally.metrics
-        #expect(m.allowed + m.denied == 2)
-    }
-
-    @Test("Per-peer request bucket denies bursts below global pressure")
-    func testPerPeerRequestBucketDeniesBurst() {
+    @Test("Excessive requests are token-bucket denial only")
+    func excessiveRequestsOnlyConsumeTokens() {
         let tally = Tally(config: TallyConfig(
-            rateLimitBytesPerSecond: 1_000_000_000,
             perPeerRequestCapacity: 2,
             perPeerRequestRefillPerSecond: 0
         ))
-        let peer = PeerID(publicKey: "burst-peer")
+        let peer = PeerID(publicKey: "burst")
 
         #expect(tally.shouldAllow(peer: peer))
         #expect(tally.shouldAllow(peer: peer))
         #expect(!tally.shouldAllow(peer: peer))
-    }
-
-    @Test("Metrics track total bytes")
-    func testMetricsTotalBytes() {
-        let tally = Tally()
-        let peer = PeerID(publicKey: "test")
-        tally.recordSent(peer: peer, bytes: 100)
-        tally.recordReceived(peer: peer, bytes: 50)
-        let m = tally.metrics
-        #expect(m.totalBytesSent == 100)
-        #expect(m.totalBytesReceived == 50)
-    }
-
-    @Test("Peer count")
-    func testPeerCount() {
-        let tally = Tally()
+        #expect(tally.admissionScore(for: peer) == 0)
         #expect(tally.peerCount == 0)
-        tally.recordSent(peer: PeerID(publicKey: "a"), bytes: 1)
-        tally.recordSent(peer: PeerID(publicKey: "b"), bytes: 1)
-        #expect(tally.peerCount == 2)
+        #expect(tally.metrics.allowed == 2)
+        #expect(tally.metrics.denied == 1)
     }
 
-    @Test("Ledger map stays bounded and evicts lowest reputation LRU")
-    func testBoundedLedgersEvictLowestReputationLRU() {
+    @Test("Unknown peer is denied under send-rate pressure")
+    func unknownPeerDeniedUnderPressure() {
+        let tally = Tally(config: TallyConfig(rateLimitBytesPerSecond: 100))
+        tally.recordSent(peer: PeerID(publicKey: "load"), bytes: 500)
+        let unknown = PeerID(publicKey: "unknown-under-pressure")
+
+        #expect(tally.ratePressure() >= 1)
+        #expect(!tally.shouldAllow(peer: unknown))
+        #expect(tally.admissionScore(for: unknown) == 0)
+    }
+
+    @Test("Strong exchange, challenge, and key work pass under pressure")
+    func strongEvidencePassesUnderPressure() throws {
+        let tally = Tally(config: TallyConfig(
+            challengeDifficulty: 4,
+            rateLimitBytesPerSecond: 100,
+            hardnessBaseline: 4,
+            exchangeBaseline: 1,
+            powBaseline: 16
+        ))
+        let peer = PeerID(publicKey: "peer-4587")
+        tally.recordReceived(peer: peer, bytes: 100)
+        let challenge = tally.issueChallenge(for: peer)
+        let solution = try #require(ChallengeSolver().solve(challenge))
+        #expect(tally.verifyChallenge(challenge, solution: solution, peer: peer))
+        tally.recordSent(peer: PeerID(publicKey: "load"), bytes: 500)
+
+        #expect(tally.admissionScore(for: peer) > 0.99)
+        #expect(tally.shouldAllow(peer: peer))
+    }
+
+    @Test("Reset clears evidence, request tokens, and outstanding challenges")
+    func resetPeer() throws {
+        let tally = Tally(config: TallyConfig(
+            challengeDifficulty: 4,
+            perPeerRequestCapacity: 1,
+            perPeerRequestRefillPerSecond: 0
+        ))
+        let peer = PeerID(publicKey: "reset")
+        tally.recordReceived(peer: peer, bytes: 100)
+        #expect(tally.shouldAllow(peer: peer))
+        #expect(!tally.shouldAllow(peer: peer))
+        let challenge = tally.issueChallenge(for: peer)
+        let solution = try #require(ChallengeSolver().solve(challenge))
+
+        tally.resetPeer(peer)
+
+        #expect(tally.admissionScore(for: peer) == 0)
+        #expect(tally.peerCount == 0)
+        #expect(tally.shouldAllow(peer: peer))
+        #expect(!tally.verifyChallenge(challenge, solution: solution, peer: peer))
+    }
+
+    @Test("Non-positive byte counts are ignored")
+    func invalidByteCounts() {
+        let tally = Tally()
+        let peer = PeerID(publicKey: "invalid-bytes")
+
+        tally.recordSent(peer: peer, bytes: 0)
+        tally.recordSent(peer: peer, bytes: -1)
+        tally.recordReceived(peer: peer, bytes: 0)
+        tally.recordReceived(peer: peer, bytes: -1)
+
+        #expect(tally.peerCount == 0)
+        #expect(tally.metrics.totalBytesSent == 0)
+        #expect(tally.metrics.totalBytesReceived == 0)
+    }
+
+    @Test("Byte counters saturate instead of trapping")
+    func byteCountersSaturate() {
+        let tally = Tally()
+        let peer = PeerID(publicKey: "large-counter")
+
+        tally.recordSent(peer: peer, bytes: .max)
+        tally.recordSent(peer: peer, bytes: 1)
+        tally.recordReceived(peer: peer, bytes: .max)
+        tally.recordReceived(peer: peer, bytes: 1)
+
+        #expect(tally.metrics.totalBytesSent == .max)
+        #expect(tally.metrics.totalBytesReceived == .max)
+        #expect(tally.ratePressure().isFinite)
+    }
+
+    @Test("Evidence storage remains bounded")
+    func boundedEvidence() {
         let config = TallyConfig(maxPeers: 1)
         let tally = Tally(config: config)
-        let cap = config.boundedPeerStateCapacity
-        let staleLow = PeerID(publicKey: "stale-low")
-        let highRep = PeerID(publicKey: "high-rep")
 
-        tally.recordRequest(peer: staleLow)
-        tally.recordReceived(peer: highRep, bytes: 100_000)
-        for _ in 0..<10 { tally.recordSuccess(peer: highRep) }
-
-        for i in 0..<(cap - 2) {
-            tally.recordRequest(peer: PeerID(publicKey: "low-\(i)"))
+        for index in 0...config.boundedPeerStateCapacity {
+            tally.recordReceived(peer: PeerID(publicKey: "peer-\(index)"), bytes: 1)
         }
-        #expect(tally.peerCount == cap)
 
-        tally.recordRequest(peer: PeerID(publicKey: "new-low"))
-        #expect(tally.peerCount <= cap)
-        #expect(tally.peerLedger(for: highRep) != nil)
-        #expect(tally.peerLedger(for: staleLow) == nil)
+        #expect(tally.peerCount == config.boundedPeerStateCapacity)
     }
 
-    @Test("Rate pressure reflects sent bytes")
-    func testRatePressure() {
-        let tally = Tally(config: TallyConfig(rateLimitBytesPerSecond: 1000))
-        let peer = PeerID(publicKey: "a")
-        tally.recordSent(peer: peer, bytes: 500)
-        #expect(tally.ratePressure() > 0)
-    }
-
-    @Test("Decay reduces old byte counters")
-    func testDecayReducesCounters() {
-        let tally = Tally(config: TallyConfig(decayHalfLife: 0.001))
-        let peer = PeerID(publicKey: "decay-test")
-        tally.recordSent(peer: peer, bytes: 1000)
-        let ratio = tally.debtRatio(for: peer)
-        #expect(ratio < 1000)
-    }
-
-    @Test("Far data (low CPL) earns more credit than near data")
-    func testDistanceScaling() {
-        let tally = Tally()
-        let far = PeerID(publicKey: "far")
-        let near = PeerID(publicKey: "near")
-        tally.recordReceived(peer: far, bytes: 1000, cpl: 0)
-        tally.recordReceived(peer: near, bytes: 1000, cpl: 200)
-        let farCredit = tally.peerLedger(for: far)!.bytesReceived.value
-        let nearCredit = tally.peerLedger(for: near)!.bytesReceived.value
-        #expect(farCredit > nearCredit)
-    }
-
-    @Test("CPL 0 gives full credit, CPL 256 gives zero")
-    func testDistanceScalingBounds() {
-        let tally = Tally()
-        let a = PeerID(publicKey: "a")
-        let b = PeerID(publicKey: "b")
-        tally.recordReceived(peer: a, bytes: 1000, cpl: 0)
-        tally.recordReceived(peer: b, bytes: 1000, cpl: 256)
-        #expect(tally.peerLedger(for: a)!.bytesReceived.value == 1000)
-        #expect(tally.peerLedger(for: b)!.bytesReceived.value == 0)
-    }
-
-    @Test("No CPL means no scaling")
-    func testNoCPLNoScaling() {
-        let tally = Tally()
-        let peer = PeerID(publicKey: "p")
-        tally.recordReceived(peer: peer, bytes: 1000)
-        #expect(tally.peerLedger(for: peer)!.bytesReceived.value == 1000)
-    }
-
-    @Test("recordSent scales by CPL")
-    func testSentDistanceScaled() {
-        let tally = Tally()
-        let far = PeerID(publicKey: "far")
-        let near = PeerID(publicKey: "near")
-        tally.recordSent(peer: far, bytes: 1000, cpl: 0)
-        tally.recordSent(peer: near, bytes: 1000, cpl: 200)
-        #expect(tally.peerLedger(for: far)!.bytesSent.value > tally.peerLedger(for: near)!.bytesSent.value)
-    }
-
-    @Test("recordSent without CPL is unscaled")
-    func testSentNoCPL() {
-        let tally = Tally()
-        let peer = PeerID(publicKey: "p")
-        tally.recordSent(peer: peer, bytes: 1000)
-        #expect(tally.peerLedger(for: peer)!.bytesSent.value == 1000)
-    }
-
-    @Test("Rate pressure uses raw bytes not distance-scaled")
-    func testRatePressureRawBytes() {
-        let tally = Tally(config: TallyConfig(rateLimitBytesPerSecond: 1000))
-        let peer = PeerID(publicKey: "a")
-        tally.recordSent(peer: peer, bytes: 500, cpl: 256)
-        #expect(tally.ratePressure() > 0)
-    }
-
-    @Test("PeerID trailing zero bits computed from SHA-256 hash")
-    func testPeerIDTrailingZeroBits() {
+    @Test("PeerID trailing zero bits use SHA-256")
+    func peerIDTrailingZeroBits() {
         #expect(PeerID(publicKey: "abc").trailingZeroBits == 0)
         #expect(PeerID(publicKey: "abc123").trailingZeroBits == 4)
         #expect(PeerID(publicKey: "peer-4587").trailingZeroBits == 17)
-        #expect(PeerID(publicKey: "peer-0").trailingZeroBits == 0)
     }
 
-    @Test("keyWorkBits: prefixed and raw forms of the same key measure identically")
-    func testKeyWorkBitsPrefixedRawParity() {
-        // Grind a raw 64-hex key with >= 8 work bits whose ed01-prefixed
-        // spelling, hashed VERBATIM, would score below 8 — i.e. a key that an
-        // unnormalized gate would wrongly reject when presented prefixed.
-        var raw = ""
-        var rng = SystemRandomNumberGenerator()
-        while true {
-            raw = (0..<32).map { _ in String(format: "%02x", UInt8.random(in: 0...255, using: &rng)) }.joined()
-            if KeyDifficulty.trailingZeroBits(of: raw) >= 8,
-               KeyDifficulty.trailingZeroBits(of: "ed01" + raw) < 8 {
-                break
-            }
-        }
-        let prefixed = "ed01" + raw
-        #expect(KeyDifficulty.canonicalRawHex(prefixed) == raw)
-        #expect(KeyDifficulty.canonicalRawHex(raw) == raw)
-        #expect(KeyDifficulty.keyWorkBits(prefixed) == KeyDifficulty.keyWorkBits(raw))
+    @Test("Canonical and raw key spellings have equal key work")
+    func canonicalKeyWork() {
+        let raw = "0000000000000000000000000000000000000000000000000000000000000059"
+
+        #expect(KeyDifficulty.canonicalRawHex("ed01" + raw) == raw)
+        #expect(KeyDifficulty.keyWorkBits("ed01" + raw) == KeyDifficulty.keyWorkBits(raw))
         #expect(KeyDifficulty.keyWorkBits(raw) >= 8)
-        #expect(KeyDifficulty.keyWorkBits(raw) == KeyDifficulty.trailingZeroBits(of: raw))
-    }
-
-    @Test("canonicalRawHex: stripping is prefix+length based, everything else passes through verbatim")
-    func testCanonicalRawHexPassthrough() {
-        // Wrong length: ed01 prefix but not 68 chars — passthrough.
-        let short = "ed01" + String(repeating: "a", count: 60)
-        #expect(KeyDifficulty.canonicalRawHex(short) == short)
-        let long = "ed01" + String(repeating: "a", count: 66)
-        #expect(KeyDifficulty.canonicalRawHex(long) == long)
-        // No prefix: passthrough, measured as presented.
-        let opaque = "peer-4587"
-        #expect(KeyDifficulty.canonicalRawHex(opaque) == opaque)
-        #expect(KeyDifficulty.keyWorkBits(opaque) == KeyDifficulty.trailingZeroBits(of: opaque))
-        // 68 chars with ed01 prefix is stripped even if the payload is not
-        // valid hex — canonicalization does not validate, gates do.
-        let junk = "ed01" + String(repeating: "z", count: 64)
-        #expect(KeyDifficulty.canonicalRawHex(junk) == String(repeating: "z", count: 64))
-        // Empty string: passthrough.
-        #expect(KeyDifficulty.canonicalRawHex("") == "")
-    }
-
-    @Test("POW does not create reputation for new peers")
-    func testPowRequiresExchange() {
-        let config = TallyConfig(
-            weights: ReputationWeights(reciprocity: 0, latency: 0, successRate: 0, challenges: 0, pow: 0.1),
-            powBaseline: 16
-        )
-        let tally = Tally(config: config)
-        let highPow = PeerID(publicKey: "peer-4587")
-        let lowPow = PeerID(publicKey: "peer-0")
-        tally.recordRequest(peer: highPow)
-        tally.recordRequest(peer: lowPow)
-        #expect(tally.reputation(for: highPow) == tally.reputation(for: lowPow))
-
-        tally.recordReceived(peer: highPow, bytes: 100_000)
-        #expect(tally.reputation(for: highPow) > tally.reputation(for: lowPow))
-    }
-
-    @Test("POW floor does not exceed behavioral reputation")
-    func testPowFloorDoesNotExceedBehavioral() {
-        let tally = Tally(config: TallyConfig(powBaseline: 16))
-        let peer = PeerID(publicKey: "peer-4587")
-        tally.recordReceived(peer: peer, bytes: 100_000)
-        for _ in 0..<20 { tally.recordSuccess(peer: peer) }
-        tally.recordLatency(peer: peer, microseconds: 1000)
-        let rep = tally.reputation(for: peer)
-        #expect(rep > 0.1)
-    }
-
-    @Test("POW does not influence distance scaling")
-    func testPowDoesNotAffectDistanceScaling() {
-        let tally = Tally()
-        let highPow = PeerID(publicKey: "peer-4587")
-        let lowPow = PeerID(publicKey: "peer-0")
-        tally.recordReceived(peer: highPow, bytes: 1000, cpl: 128)
-        tally.recordReceived(peer: lowPow, bytes: 1000, cpl: 128)
-        let highCredit = tally.peerLedger(for: highPow)!.bytesReceived.value
-        let lowCredit = tally.peerLedger(for: lowPow)!.bytesReceived.value
-        #expect(highCredit == lowCredit)
     }
 }

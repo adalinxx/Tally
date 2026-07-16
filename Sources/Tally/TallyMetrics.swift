@@ -6,3 +6,10 @@ public struct TallyMetrics: Sendable, Equatable {
     public var challengesIssued: Int = 0
     public var challengesVerified: Int = 0
 }
+
+extension Int {
+    mutating func addSaturating(_ value: Int) {
+        let (sum, overflow) = addingReportingOverflow(value)
+        self = overflow ? (value >= 0 ? .max : .min) : sum
+    }
+}

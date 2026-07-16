@@ -5,12 +5,14 @@ public enum PeerProtocolFailure: Sendable, Equatable {
     case malformedMessage
     case contentAddressMismatch
     case invalidEvidence
+    case excessiveRequests
 }
 
 /// Failures in a peer's content service. A caller should use
 /// `advertisedContentUnavailable` only for the peer that advertised the content.
 public enum PeerServiceFailure: Sendable, Equatable {
     case advertisedContentUnavailable
+    case incompleteResponse
     case attributedTimeout
 }
 

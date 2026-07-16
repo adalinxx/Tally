@@ -5,6 +5,11 @@ public struct PeerLedger: Sendable {
     public var bytesReceived: DecayingCounter
     public var successCount: DecayingCounter
     public var failureCount: DecayingCounter
+    public var protocolFailureCount: DecayingCounter
+    public var serviceSuccessCount: DecayingCounter
+    public var serviceFailureCount: DecayingCounter
+    public var routeSuccessCount: DecayingCounter
+    public var routeFailureCount: DecayingCounter
     public var challengeHardness: DecayingCounter
     public var firstSeen: ContinuousClock.Instant
     public var lastSeen: ContinuousClock.Instant
@@ -38,6 +43,24 @@ public struct PeerLedger: Sendable {
         return rate * rate
     }
 
+    public var protocolCorrectness: Double {
+        1.0 / (1.0 + protocolFailureCount.value)
+    }
+
+    public var serviceReliability: Double {
+        Self.reliability(successes: serviceSuccessCount.value, failures: serviceFailureCount.value)
+    }
+
+    public var routeReliability: Double {
+        Self.reliability(successes: routeSuccessCount.value, failures: routeFailureCount.value)
+    }
+
+    private static func reliability(successes: Double, failures: Double) -> Double {
+        let total = successes + failures
+        guard total > DecayingCounter.minimumRetainedValue else { return 0.5 }
+        return successes / total
+    }
+
     public mutating func reputation(weights: ReputationWeights = .default, latencyBaseline: Double = 100_000, hardnessBaseline: Int = 160, exchangeBaseline: Double = 100_000, peerPowBits: Int = 0, powBaseline: Int = 16) -> Double {
         if !reputationStale { return cachedReputation }
         let totalExchange = bytesSent.value + bytesReceived.value
@@ -68,6 +91,11 @@ public struct PeerLedger: Sendable {
         bytesReceived.decay(to: now, halfLife: halfLife)
         successCount.decay(to: now, halfLife: halfLife)
         failureCount.decay(to: now, halfLife: halfLife)
+        protocolFailureCount.decay(to: now, halfLife: halfLife)
+        serviceSuccessCount.decay(to: now, halfLife: halfLife)
+        serviceFailureCount.decay(to: now, halfLife: halfLife)
+        routeSuccessCount.decay(to: now, halfLife: halfLife)
+        routeFailureCount.decay(to: now, halfLife: halfLife)
         challengeHardness.decay(to: now, halfLife: halfLife)
         reputationStale = true
     }
@@ -81,6 +109,11 @@ public struct PeerLedger: Sendable {
         self.bytesReceived = DecayingCounter(lastDecay: now)
         self.successCount = DecayingCounter(lastDecay: now)
         self.failureCount = DecayingCounter(lastDecay: now)
+        self.protocolFailureCount = DecayingCounter(lastDecay: now)
+        self.serviceSuccessCount = DecayingCounter(lastDecay: now)
+        self.serviceFailureCount = DecayingCounter(lastDecay: now)
+        self.routeSuccessCount = DecayingCounter(lastDecay: now)
+        self.routeFailureCount = DecayingCounter(lastDecay: now)
         self.challengeHardness = DecayingCounter(lastDecay: now)
         self.firstSeen = now
         self.lastSeen = now

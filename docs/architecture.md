@@ -77,17 +77,19 @@ measure equally. Key validity remains a caller concern.
 
 ## State lifetime
 
-Evidence, request buckets, and outstanding challenges live in bounded
-least-recently-used maps. Eviction forgets local state; it does not condemn a
-peer. `resetPeer(_:)` removes one peer's state without rewriting lifetime
-metrics.
+The mutable peer-associated state retained by `Tally` (evidence, request
+buckets, and outstanding challenges) lives in bounded least-recently-used maps.
+Eviction forgets local state; it does not condemn a peer. `resetPeer(_:)`
+removes one peer's state without rewriting lifetime metrics.
 
 ## Credit lines
 
 `CreditLineLedger` serializes bilateral balances, sequence, thresholds, and
-settlement history. Arithmetic saturates at integer bounds. The host defines
-service units and validates settlement; credit never enters peer evidence,
-send pressure, or the admission score.
+settlement history. Its line storage is unbounded and lasts for the actor's
+caller-controlled lifetime; only `removeLine(for:)` removes a line, so debt is
+never silently evicted. Arithmetic saturates at integer bounds. The host
+defines service units and validates settlement; credit never enters peer
+evidence, send pressure, or the admission score.
 
 ## Integration law
 

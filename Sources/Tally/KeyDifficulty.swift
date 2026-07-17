@@ -20,13 +20,13 @@ public enum KeyDifficulty: Sendable {
     /// Canonical raw-hex form of a presented public key.
     ///
     /// Ed25519 keys travel in two spellings: the raw 64-hex form and the
-    /// `ed01`-prefixed Multikey form (2-byte multicodec prefix → 68 hex chars).
-    /// This strips the Multikey prefix down to the raw form; anything else —
-    /// including malformed strings (wrong length, non-hex) — passes through
+    /// `ed01`-prefixed Multikey form (2-byte multicodec prefix, 68 hex chars).
+    /// This strips the Multikey prefix down to the raw form; anything else,
+    /// including malformed strings (wrong length or non-hex), passes through
     /// verbatim, so an opaque or junk key is simply measured as presented
     /// rather than rejected here. Gates that need validity must check it
     /// separately; this function only collapses the two spellings of the
-    /// SAME key onto one canonical string.
+    /// same key onto one canonical string.
     public static func canonicalRawHex(_ presented: String) -> String {
         if presented.hasPrefix("ed01") && presented.count == 68 {
             return String(presented.dropFirst(4))
@@ -34,15 +34,11 @@ public enum KeyDifficulty: Sendable {
         return presented
     }
 
-    /// THE single measure for identity-PoW gates: trailing-zero bits of
+    /// Canonical measure for identity-PoW gates: trailing-zero bits of
     /// SHA-256 over the canonical raw-hex key form.
     ///
-    /// Every identity-PoW gate (Ivy identify/routing gates, lattice-node
-    /// PeerDiversity and identity grind) must use this measure so that a key
-    /// ground to N bits for one gate passes every other gate regardless of
-    /// whether it is presented raw or `ed01`-prefixed. Measuring the
-    /// presented string verbatim instead would make the two spellings of the
-    /// same key score differently with overwhelming probability.
+    /// Identity-PoW gates should use this measure so raw and `ed01`-prefixed
+    /// spellings of the same key agree.
     public static func keyWorkBits(_ presented: String) -> Int {
         trailingZeroBits(of: canonicalRawHex(presented))
     }

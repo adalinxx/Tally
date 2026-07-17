@@ -33,7 +33,7 @@ public struct CreditLine: Sendable {
     }
 
     /// Continuous debt pressure from 0.0 (no debt) to 1.0 (at or past threshold).
-    /// Use for graduated throttling: higher pressure → less bandwidth allocated.
+    /// Use for graduated throttling: higher pressure means less bandwidth.
     public var debtPressure: Double {
         let threshold = clampedThreshold
         guard threshold > 0 else { return 1.0 }

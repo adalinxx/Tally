@@ -28,10 +28,15 @@ public enum KeyDifficulty: Sendable {
     /// separately; this function only collapses the two spellings of the
     /// same key onto one canonical string.
     public static func canonicalRawHex(_ presented: String) -> String {
-        if presented.hasPrefix("ed01") && presented.count == 68 {
-            return String(presented.dropFirst(4))
-        }
-        return presented
+        guard presented.hasPrefix("ed01") else { return presented }
+        let raw = presented.dropFirst(4)
+        guard raw.utf8.count == 64,
+              raw.utf8.allSatisfy({ byte in
+                  (0x30...0x39).contains(byte)
+                      || (0x41...0x46).contains(byte)
+                      || (0x61...0x66).contains(byte)
+              }) else { return presented }
+        return String(raw)
     }
 
     /// Canonical measure for identity-PoW gates: trailing-zero bits of
@@ -48,7 +53,7 @@ public enum KeyDifficulty: Sendable {
         minDifficulty: Int = 0,
         maxDifficulty: Int = 32
     ) -> Double {
-        let bits = trailingZeroBits(of: publicKey)
+        let bits = keyWorkBits(publicKey)
         guard bits > minDifficulty else { return 0 }
         if bits >= maxDifficulty { return 1.0 }
         return Double(bits - minDifficulty) / Double(maxDifficulty - minDifficulty)

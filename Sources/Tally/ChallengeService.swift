@@ -13,14 +13,27 @@ struct ChallengeService: Sendable {
     }
 
     mutating func issue(for peer: PeerID) -> Challenge {
-        let now = ContinuousClock.now
-        pruneExpired(at: now)
-
         let challenge = Challenge(
             boundPeer: peer,
             difficulty: config.challengeDifficulty,
             expiresAfter: config.challengeExpiration
         )
+        return store(challenge, at: challenge.issuedAt)
+    }
+
+    mutating func issue(for peer: PeerID, nonce: Data, at now: ContinuousClock.Instant) -> Challenge {
+        let challenge = Challenge(
+            nonce: nonce,
+            boundPeer: peer,
+            difficulty: config.challengeDifficulty,
+            issuedAt: now,
+            expiresAfter: config.challengeExpiration
+        )
+        return store(challenge, at: now)
+    }
+
+    private mutating func store(_ challenge: Challenge, at now: ContinuousClock.Instant) -> Challenge {
+        pruneExpired(at: now)
         outstandingNonces.setValue(
             OutstandingChallenge(challenge),
             forKey: challenge.nonce
@@ -32,7 +45,15 @@ struct ChallengeService: Sendable {
     }
 
     mutating func verify(_ challenge: Challenge, solution: Data, peer: PeerID) -> Bool {
-        let now = ContinuousClock.now
+        verify(challenge, solution: solution, peer: peer, at: .now)
+    }
+
+    mutating func verify(
+        _ challenge: Challenge,
+        solution: Data,
+        peer: PeerID,
+        at now: ContinuousClock.Instant
+    ) -> Bool {
         pruneExpired(at: now)
 
         guard challenge.boundPeer == peer else { return false }
@@ -80,6 +101,7 @@ private struct OutstandingChallenge: Sendable {
     func matches(_ challenge: Challenge) -> Bool {
         boundPeer == challenge.boundPeer
             && difficulty == challenge.difficulty
+            && issuedAt == challenge.issuedAt
             && expiresAfter == challenge.expiresAfter
     }
 

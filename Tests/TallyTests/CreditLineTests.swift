@@ -39,6 +39,44 @@ struct CreditLineTests {
         #expect(line.balance == .max)
     }
 
+    @Test("Successful settlement recovers a zero threshold")
+    func testSuccessfulSettlementRecoversZeroThreshold() {
+        var line = CreditLine(
+            peerA: PeerID(publicKey: "local"),
+            peerB: PeerID(publicKey: "remote"),
+            threshold: 1
+        )
+
+        line.recordMissedSettlement()
+        #expect(line.threshold == 0)
+        #expect(line.needsSettlement)
+
+        line.recordSettlement()
+        #expect(line.threshold == 2)
+    }
+
+    @Test("Successful settlement does not shrink a nondivisible threshold")
+    func testSuccessfulSettlementRoundsThresholdUp() {
+        var line = CreditLine(
+            peerA: PeerID(publicKey: "local"),
+            peerB: PeerID(publicKey: "remote"),
+            threshold: 3
+        )
+
+        line.recordSettlement()
+        #expect(line.threshold == 6)
+        line.recordMissedSettlement()
+        #expect(line.threshold == 3)
+        line.recordSettlement()
+        #expect(line.threshold == 4)
+        line.recordMissedSettlement()
+        #expect(line.threshold == 2)
+        line.recordMissedSettlement()
+        #expect(line.threshold == 1)
+        line.recordSettlement()
+        #expect(line.threshold == 3)
+    }
+
     @Test("Initial threshold saturates at UInt64 max")
     func testInitialThresholdSaturates() {
         #expect(CreditLine.initialThreshold(baseTrust: 1, multiplier: .max) == .max)

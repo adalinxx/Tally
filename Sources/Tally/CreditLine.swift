@@ -59,7 +59,9 @@ public struct CreditLine: Sendable {
         Self.increment(&successfulSettlements)
         let currentScale = Self.settlementScale(successfulSettlements)
         let nextScale = Self.settlementScale(successfulSettlements == .max ? .max : successfulSettlements + 1)
-        let initial = threshold / currentScale
+        let roundedInitial = threshold / currentScale
+            + (threshold.isMultiple(of: currentScale) ? 0 : 1)
+        let initial = max(roundedInitial, 1)
         let (updated, overflow) = initial.multipliedReportingOverflow(by: nextScale)
         threshold = overflow ? .max : updated
     }

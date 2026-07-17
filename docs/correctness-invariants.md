@@ -14,10 +14,10 @@ attributed by its caller.
 | TALLY-007 | Every score component and the final score remain finite and bounded. |
 | TALLY-008 | Challenges are peer-bound, exact, expiring, and consumed before work is credited. |
 | TALLY-009 | Admission and identity gates use the same canonical key-work measure. |
-| TALLY-010 | Mutable peer state is bounded; eviction forgets rather than punishes. |
+| TALLY-010 | Mutable peer-associated state retained by `Tally` is bounded: evidence, request buckets, and outstanding challenges; eviction forgets rather than punishes. |
 | TALLY-011 | Peer reset affects only that peer and preserves lifetime metrics. |
 | TALLY-012 | Credit state never affects evidence, pressure, or admission score. |
-| TALLY-013 | Credit arithmetic saturates and nonpositive relay amounts do not mutate state. |
+| TALLY-013 | Credit arithmetic saturates; successful settlement recovers zero without lowering the threshold; nonpositive relay amounts do not mutate state. |
 | TALLY-014 | Tally grants no membership, content, storage, consensus, or application authority. |
 
 Coverage lives in `PeerEvidenceTests`, `TallyTests`, `AdmissionControllerTests`,

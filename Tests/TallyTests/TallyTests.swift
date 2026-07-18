@@ -100,26 +100,34 @@ struct TallyTests {
         #expect(tally.shouldAllow(peer: peer))
     }
 
-    @Test("Reset clears evidence, request tokens, and outstanding challenges")
-    func resetPeer() throws {
+    @Test("Reset clears only one peer and preserves lifetime metrics")
+    func resetPeer() {
         let tally = Tally(config: TallyConfig(
-            challengeDifficulty: 4,
+            challengeDifficulty: 0,
             perPeerRequestCapacity: 1,
             perPeerRequestRefillPerSecond: 0
         ))
         let peer = PeerID(publicKey: "reset")
+        let control = PeerID(publicKey: "control")
         tally.recordReceived(peer: peer, bytes: 100)
+        tally.recordReceived(peer: control, bytes: 100)
         #expect(tally.shouldAllow(peer: peer))
+        #expect(tally.shouldAllow(peer: control))
         #expect(!tally.shouldAllow(peer: peer))
         let challenge = tally.issueChallenge(for: peer)
-        let solution = try #require(ChallengeSolver().solve(challenge))
+        let controlChallenge = tally.issueChallenge(for: control)
+        let metrics = tally.metrics
 
         tally.resetPeer(peer)
 
+        #expect(tally.metrics == metrics)
         #expect(tally.admissionScore(for: peer) == 0)
-        #expect(tally.peerCount == 0)
+        #expect(tally.admissionScore(for: control) > 0)
+        #expect(tally.peerCount == 1)
         #expect(tally.shouldAllow(peer: peer))
-        #expect(!tally.verifyChallenge(challenge, solution: solution, peer: peer))
+        #expect(!tally.shouldAllow(peer: control))
+        #expect(!tally.verifyChallenge(challenge, solution: Data(), peer: peer))
+        #expect(tally.verifyChallenge(controlChallenge, solution: Data(), peer: control))
     }
 
     @Test("Non-positive byte counts are ignored")
@@ -152,16 +160,62 @@ struct TallyTests {
         #expect(tally.ratePressure().isFinite)
     }
 
-    @Test("Evidence storage remains bounded")
+    @Test("Evidence storage evicts least-recently-used state and restarts fresh")
     func boundedEvidence() {
         let config = TallyConfig(maxPeers: 1)
         let tally = Tally(config: config)
-
-        for index in 0...config.boundedPeerStateCapacity {
-            tally.recordReceived(peer: PeerID(publicKey: "peer-\(index)"), bytes: 1)
+        let peers = (0...config.boundedPeerStateCapacity).map {
+            PeerID(publicKey: "bounded-peer-\($0)")
         }
 
+        for peer in peers.dropLast() {
+            tally.recordReceived(peer: peer, bytes: 1)
+        }
+        #expect(tally.admissionScore(for: peers[0]) > 0)
+        tally.recordReceived(peer: peers.last!, bytes: 1)
+
         #expect(tally.peerCount == config.boundedPeerStateCapacity)
+        #expect(tally.admissionScore(for: peers[0]) > 0)
+        #expect(tally.admissionScore(for: peers[1]) == 0)
+
+        tally.recordReceived(peer: peers[1], bytes: 1)
+        #expect(tally.admissionScore(for: peers[1]) > 0)
+        #expect(tally.peerCount == config.boundedPeerStateCapacity)
+    }
+
+    @Test("Shared Tally updates remain atomic under concurrent saturation")
+    func concurrentSaturatingWorkload() async {
+        let taskCount = 16
+        let iterations = 64
+        let operations = taskCount * iterations
+        let tally = Tally(config: TallyConfig(
+            rateLimitBytesPerSecond: 1e30,
+            perPeerRequestCapacity: Double(operations),
+            perPeerRequestRefillPerSecond: 0
+        ))
+        let peer = PeerID(publicKey: "concurrent")
+        let start = OneShotBarrier(participantCount: taskCount)
+
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<taskCount {
+                group.addTask {
+                    await start.wait()
+                    for _ in 0..<iterations {
+                        tally.recordSent(peer: peer, bytes: .max)
+                        tally.recordReceived(peer: peer, bytes: .max)
+                        _ = tally.shouldAllow(peer: peer)
+                    }
+                }
+            }
+        }
+
+        #expect(tally.metrics.totalBytesSent == .max)
+        #expect(tally.metrics.totalBytesReceived == .max)
+        #expect(tally.metrics.allowed == operations)
+        #expect(tally.metrics.denied == 0)
+        #expect(tally.peerCount == 1)
+        #expect(tally.admissionScore(for: peer).isFinite)
+        #expect(tally.ratePressure().isFinite)
     }
 
     @Test("PeerID trailing zero bits use SHA-256")
@@ -174,9 +228,19 @@ struct TallyTests {
     @Test("Canonical and raw key spellings have equal key work")
     func canonicalKeyWork() {
         let raw = "0000000000000000000000000000000000000000000000000000000000000059"
+        let caseRaw = String(repeating: "ab", count: 32)
+        let uppercase = caseRaw.uppercased()
+        let malformed = "ed01" + "0000000000000000000000000000000000000000000000000000000000004afg"
 
         #expect(KeyDifficulty.canonicalRawHex("ed01" + raw) == raw)
+        #expect(KeyDifficulty.canonicalRawHex("ED01" + uppercase) == caseRaw)
+        #expect(KeyDifficulty.canonicalRawHex(uppercase) == caseRaw)
         #expect(KeyDifficulty.keyWorkBits("ed01" + raw) == KeyDifficulty.keyWorkBits(raw))
         #expect(KeyDifficulty.keyWorkBits(raw) >= 8)
+        #expect(PeerID(publicKey: "ED01" + uppercase) == PeerID(publicKey: caseRaw))
+        #expect(PeerID(publicKey: uppercase).trailingZeroBits == KeyDifficulty.keyWorkBits(caseRaw))
+        #expect(KeyDifficulty.canonicalRawHex(malformed) == malformed)
+        #expect(KeyDifficulty.keyWorkBits(malformed) == 0)
+        #expect(KeyDifficulty.baseTrust(publicKey: malformed) == 0)
     }
 }

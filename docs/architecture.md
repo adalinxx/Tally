@@ -1,69 +1,38 @@
-# Tally Architecture
+# Architecture
 
-## Boundary
-
-Tally owns:
-
-- peer-global raw byte accounting;
-- per-peer token-bucket admission and global send-rate pressure;
-- authenticated identity work and peer-bound challenge work;
-- protocol violations attributable to a peer; and
-- bilateral `CreditLine` accounting.
-
-Tally does not own content availability, route or service health, generic
-request success or failure, latency, or DHT/CPL proximity. A host must keep
-those observations in the component that understands their semantics.
-
-## Components
+Tally is process-local policy. Its caller supplies an authenticated `PeerID`
+and only evidence that remains meaningful across that peer's requests.
 
 ```text
-Tally
-  LockedState
-    [PeerID: PeerEvidence]
-    AdmissionController
-    ChallengeService
-    TallyMetrics
-
-CreditLineLedger actor
-  [PeerID: CreditLine]
+authenticated, attributed observations
+                  |
+                  v
+       evidence + local pressure
+                  |
+                  v
+             allow or deny
 ```
 
-`Tally` is a `Sendable` value whose state is protected by
-`OSAllocatedUnfairLock` on supported platforms and `NSLock` elsewhere.
-`CreditLineLedger` is a separate actor because credit lines have an independent
-lifecycle and API.
+`Tally` is a `Sendable` value backed by shared lock-protected state. Its public
+methods perform short synchronous mutations. `CreditLineLedger` is a separate
+actor with an independent lifecycle.
 
-## Peer Evidence
+## Evidence
 
-`PeerEvidence` is internal. It contains exactly four `Double` values and one
-`ContinuousClock.Instant`:
-
-| Value | Meaning |
-|-------|---------|
-| `bytesSent` (`S`) | Raw bytes sent to the peer. |
-| `bytesReceived` (`R`) | Raw bytes received from the peer. |
-| `protocolViolations` (`V`) | Attributable protocol violations. |
-| `challengeWork` (`W`) | Sum of verified challenge difficulty. |
-| `lastUpdate` | Shared decay time for all four values. |
-
-Every evidence mutation and every score observation first computes elapsed
-seconds and multiplies all four values by:
+Each peer entry stores sent bytes (`S`), received bytes (`R`), attributable
+violations (`V`), challenge work (`W`), and one timestamp. Before mutation or
+scoring, every signal decays from that timestamp:
 
 ```text
 d = 2^(-elapsed / decayHalfLife)
+S, R, V, W = d * S, d * R, d * V, d * W
 ```
 
-The mutation is applied only after that common decay. This keeps evidence on a
-single time basis and prevents a frequently updated field from preserving stale
-values in the other fields.
+One active signal therefore cannot preserve unrelated stale evidence.
+Nonpositive byte observations are ignored, and aggregate integer metrics
+saturate instead of trapping.
 
-Evidence storage is bounded and evicts least-recently-used entries. Calling
-`shouldAllow` for an unknown peer creates request-bucket state but no evidence;
-therefore it does not increase `peerCount` or make the peer known to scoring.
-
-## Admission Score
-
-After decay, `PeerEvidence.admissionScore` computes:
+After decay:
 
 ```text
 C = min((S + R) / exchangeBaseline, 1)
@@ -74,58 +43,66 @@ K = min(KeyDifficulty.keyWorkBits(peer.publicKey) / powBaseline, 1)
 score = clamp((0.50*C*Q + 0.25*H + 0.25*C*K) / (1 + V), 0, 1)
 ```
 
-An absent evidence entry returns zero. Identity work is multiplied by exchange
-confidence, so identity work alone cannot establish a score. Challenge work can
-establish at most `0.25` without exchange. A zero violation count adds nothing;
-violations only divide evidence already earned.
+`C` requires meaningful exchange, `Q` rewards reciprocity, `H` permits bounded
+bootstrap work, and `V` discounts earned evidence. Identity work is multiplied
+by `C`, so identity work alone earns no history. An unknown peer scores zero;
+the absence of violations is not positive evidence.
 
-## Admission Control
+## Admission
 
-`AdmissionController` owns two independent controls:
+`shouldAllow(peer:)` is one atomic decision:
 
-1. A token bucket per peer. Each `shouldAllow` call consumes one token. Denial
-   due to an empty bucket does not alter `PeerEvidence`.
-2. A global window of raw bytes sent. `ratePressure` is consumed window bytes
-   divided by the configured window byte budget, clamped to `[0, 2]`.
+1. Consume a token from the peer's request bucket; deny if none is available.
+2. Measure current process-wide send pressure.
+3. Allow below pressure `0.5`; otherwise require the peer score to reach:
 
-After a token is consumed, `shouldAllow` applies these pressure regimes:
+```text
+min((pressure - 0.5) * 1.6, 0.8)
+```
 
-| Pressure | Decision |
-|----------|----------|
-| `< 0.5` | Allow without observing a score. |
-| `>= 0.5` | Require `score >= min((pressure - 0.5) * 1.6, 0.8)`. |
+Pressure is current send-window bytes divided by its configured budget, clamped
+to `[0, 2]`. Denial updates metrics only; it does not create evidence or a
+protocol violation.
 
-This permits unknown peers while capacity is available and fails closed for
-them under pressure.
+## Challenges and identity work
 
-## Challenges And Identity Work
+A challenge binds a random nonce, peer identity, difficulty, and expiration.
+Verification accepts only the outstanding matching challenge and a solution
+whose hash meets the leading-zero-bit target. Success removes the nonce before
+crediting work, preventing replay.
 
-`ChallengeService` stores a bounded set of outstanding nonces. Each challenge
-is bound to a `PeerID`, has a difficulty and expiration, and verifies
-`SHA256(nonce || publicKey || solution)` against a leading-zero-bit target. A
-valid solution consumes the outstanding nonce before its difficulty is added to
-peer evidence. Replays, expired challenges, unknown nonces, and peer mismatches
-do not add work.
+`KeyDifficulty.keyWorkBits(_:)` hashes the canonical raw Ed25519 key and counts
+trailing zero bits. Raw hex and canonical `ed01` Multikey spellings therefore
+produce the same `PeerID` and measure equally. Key validity remains a caller
+concern.
 
-`KeyDifficulty.keyWorkBits(_:)` canonicalizes raw and `ed01`-prefixed Ed25519
-key spellings before measuring trailing zero bits. `PeerID`, lower-level key
-difficulty helpers, and `KeyDifficulty.baseTrust` remain public.
+## State lifetime
 
-## Reset And Metrics
+The mutable peer-associated state retained by `Tally` (evidence, request
+buckets, and outstanding challenges) lives in bounded least-recently-used maps.
+Eviction forgets local state; it does not condemn a peer. `resetPeer(_:)`
+removes one peer's state without rewriting lifetime metrics.
 
-`resetPeer(_:)` removes the peer's evidence, token bucket, and outstanding
-challenges. Aggregate metrics are not reset because they describe the lifetime
-of the `Tally` instance.
+## Credit lines
 
-`TallyMetrics` reports allowed and denied admission decisions, total raw bytes
-sent and received, and issued and verified challenges.
+`CreditLineLedger` serializes bilateral balances, sequence, thresholds, and
+settlement history. Its line storage is unbounded and lasts for the actor's
+caller-controlled lifetime; only `removeLine(for:)` removes a line, so debt is
+never silently evicted. Arithmetic saturates at integer bounds. The host
+defines service units and validates settlement; credit never enters peer
+evidence, send pressure, or the admission score.
 
-## Credit Lines
+## Integration law
 
-`CreditLine` tracks a signed bilateral balance, sequence, settlement threshold,
-and successful settlement count. `CreditLineLedger` serializes a map of lines in
-an actor. Identity work calibrates the initial threshold through
-`KeyDifficulty.baseTrust`; the host decides when and how actual settlement is
-performed.
+Record an observation only after the caller can identify the cryptographic peer
+that caused it.
 
-Credit-line balances do not feed `PeerEvidence` or the admission score.
+| Observation | Tally action |
+| --- | --- |
+| Authenticated bytes | Record sent or received bytes |
+| Verified signed protocol violation | Record one violation |
+| Empty content response, timeout, or failed dial | Keep in service-local state |
+| Local rate denial | Record nothing; admission metrics already change |
+| Unattributed invalid bytes | Drop the input; charge no peer |
+
+See [Correctness invariants](correctness-invariants.md) for the review laws.

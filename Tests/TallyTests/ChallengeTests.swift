@@ -14,12 +14,39 @@ struct ChallengeTests {
         #expect(challenge.verify(solution: solution, peer: peer))
     }
 
-    @Test("Wrong solution fails verification")
-    func testWrongSolution() {
-        let peer = PeerID(publicKey: "solver")
-        let challenge = Challenge(boundPeer: peer, difficulty: 16)
-        let badSolution = Data("not-a-solution".utf8)
-        #expect(challenge.verify(solution: badSolution, peer: peer) == false)
+    @Test("Fixed PoW vectors enforce exact and boundary difficulties")
+    func knownAnswerVectors() {
+        let now = ContinuousClock.now
+        let zero = ChallengeKnownAnswer.challenge(difficulty: 0, issuedAt: now)
+        let exact = ChallengeKnownAnswer.challenge(difficulty: 16, issuedAt: now)
+        let above = ChallengeKnownAnswer.challenge(difficulty: 17, issuedAt: now)
+        let maximum = ChallengeKnownAnswer.challenge(difficulty: 256, issuedAt: now)
+
+        #expect(zero.verify(
+            solution: ChallengeKnownAnswer.invalidSolution,
+            peer: ChallengeKnownAnswer.peer,
+            at: now
+        ))
+        #expect(exact.verify(
+            solution: ChallengeKnownAnswer.validSolution,
+            peer: ChallengeKnownAnswer.peer,
+            at: now
+        ))
+        #expect(!exact.verify(
+            solution: ChallengeKnownAnswer.invalidSolution,
+            peer: ChallengeKnownAnswer.peer,
+            at: now
+        ))
+        #expect(!above.verify(
+            solution: ChallengeKnownAnswer.validSolution,
+            peer: ChallengeKnownAnswer.peer,
+            at: now
+        ))
+        #expect(!maximum.verify(
+            solution: ChallengeKnownAnswer.validSolution,
+            peer: ChallengeKnownAnswer.peer,
+            at: now
+        ))
     }
 
     @Test("Tally issues and verifies challenge")
@@ -72,7 +99,11 @@ struct ChallengeTests {
         let peer = PeerID(publicKey: "cheat")
 
         let challenge = tally.issueChallenge(for: peer)
-        let verified = tally.verifyChallenge(challenge, solution: Data("bad".utf8), peer: peer)
+        let verified = tally.verifyChallenge(
+            challenge,
+            solution: invalidSolution(for: challenge),
+            peer: peer
+        )
 
         #expect(!verified)
         #expect(tally.admissionScore(for: peer) == 0)
@@ -120,22 +151,23 @@ struct ChallengeTests {
         #expect(solver.solve(expired) == nil)
     }
 
-    @Test("Expired challenge not credited via Tally")
-    func testExpiredChallengeNotCredited() throws {
+    @Test("Challenge timestamp tampering is rejected via Tally")
+    func challengeTimestampTamperingRejected() throws {
         let tally = Tally(config: TallyConfig(challengeDifficulty: 4, challengeExpiration: .seconds(300)))
         let peer = PeerID(publicKey: "slow")
         let challenge = tally.issueChallenge(for: peer)
         let solver = ChallengeSolver()
         let solution = try #require(solver.solve(challenge))
 
-        let expiredChallenge = Challenge(
+        let alteredChallenge = Challenge(
             nonce: challenge.nonce,
             boundPeer: peer,
             difficulty: challenge.difficulty,
-            issuedAt: .now - .seconds(600),
+            issuedAt: challenge.issuedAt - .seconds(1),
             expiresAfter: .seconds(300)
         )
-        let verified = tally.verifyChallenge(expiredChallenge, solution: solution, peer: peer)
+        #expect(!alteredChallenge.isExpired)
+        let verified = tally.verifyChallenge(alteredChallenge, solution: solution, peer: peer)
         #expect(!verified)
         #expect(tally.admissionScore(for: peer) == 0)
         #expect(tally.peerCount == 0)
@@ -166,5 +198,77 @@ struct ChallengeTests {
         let scoreAfter = tally.admissionScore(for: peer)
 
         #expect(scoreAfter > scoreBefore)
+    }
+}
+
+@Suite("Seeded challenge state machine")
+struct SeededChallengeStateMachineTests {
+    @Test("Seeded issue, expiry, verification, replay, and reset sequence")
+    func seededChallengeOperations() {
+        var random = SeededGenerator(defaultSeed: 0xc11a_11e0)
+        let seed = random.state
+        let config = TallyConfig(
+            challengeDifficulty: 0,
+            challengeExpiration: .seconds(5),
+            maxPeers: 1_000
+        )
+        var service = ChallengeService(config: config)
+        let peers = (0..<4).map { PeerID(publicKey: "challenge-peer-\($0)") }
+        var now = ContinuousClock.now
+        var history: [Challenge] = []
+        var outstanding: [Data: Challenge] = [:]
+
+        for step in 0..<500 {
+            now = now.advanced(by: .milliseconds(Int64(random.index(upperBound: 1_500))))
+            let operation = random.index(upperBound: 3)
+
+            if operation < 2 {
+                outstanding = outstanding.filter { !$0.value.isExpired(at: now) }
+            }
+
+            switch operation {
+            case 0:
+                let peer = peers[random.index(upperBound: peers.count)]
+                let challenge = service.issue(
+                    for: peer,
+                    nonce: testNonce(UInt64(step + 1)),
+                    at: now
+                )
+                history.append(challenge)
+                outstanding[challenge.nonce] = challenge
+
+            case 1 where !history.isEmpty:
+                let challenge = history[random.index(upperBound: history.count)]
+                let submittedPeer = random.index(upperBound: 5) == 0
+                    ? peers.first { $0 != challenge.boundPeer }!
+                    : challenge.boundPeer
+                let expected = outstanding[challenge.nonce] != nil
+                    && submittedPeer == challenge.boundPeer
+                let accepted = service.verify(
+                    challenge,
+                    solution: Data(),
+                    peer: submittedPeer,
+                    at: now
+                )
+                #expect(accepted == expected, "seed \(seed), step \(step)")
+                if accepted {
+                    outstanding.removeValue(forKey: challenge.nonce)
+                    let replayAccepted = service.verify(
+                        challenge,
+                        solution: Data(),
+                        peer: challenge.boundPeer,
+                        at: now
+                    )
+                    #expect(!replayAccepted, "seed \(seed), replay step \(step)")
+                }
+
+            default:
+                let peer = peers[random.index(upperBound: peers.count)]
+                service.removeChallenges(for: peer)
+                outstanding = outstanding.filter { $0.value.boundPeer != peer }
+            }
+
+            #expect(service.outstandingCount == outstanding.count, "seed \(seed), step \(step)")
+        }
     }
 }

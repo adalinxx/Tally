@@ -1,6 +1,6 @@
 import Foundation
 
-/// Peer-global accounting, admission control, and proof-of-work challenges.
+/// Local accounting and admission over caller-attributed peer-global evidence.
 public struct Tally: Sendable {
     private let _state: LockedState<State>
     private let config: TallyConfig

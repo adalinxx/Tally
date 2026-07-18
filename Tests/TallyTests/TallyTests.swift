@@ -228,11 +228,17 @@ struct TallyTests {
     @Test("Canonical and raw key spellings have equal key work")
     func canonicalKeyWork() {
         let raw = "0000000000000000000000000000000000000000000000000000000000000059"
+        let caseRaw = String(repeating: "ab", count: 32)
+        let uppercase = caseRaw.uppercased()
         let malformed = "ed01" + "0000000000000000000000000000000000000000000000000000000000004afg"
 
         #expect(KeyDifficulty.canonicalRawHex("ed01" + raw) == raw)
+        #expect(KeyDifficulty.canonicalRawHex("ED01" + uppercase) == caseRaw)
+        #expect(KeyDifficulty.canonicalRawHex(uppercase) == caseRaw)
         #expect(KeyDifficulty.keyWorkBits("ed01" + raw) == KeyDifficulty.keyWorkBits(raw))
         #expect(KeyDifficulty.keyWorkBits(raw) >= 8)
+        #expect(PeerID(publicKey: "ED01" + uppercase) == PeerID(publicKey: caseRaw))
+        #expect(PeerID(publicKey: uppercase).trailingZeroBits == KeyDifficulty.keyWorkBits(caseRaw))
         #expect(KeyDifficulty.canonicalRawHex(malformed) == malformed)
         #expect(KeyDifficulty.keyWorkBits(malformed) == 0)
         #expect(KeyDifficulty.baseTrust(publicKey: malformed) == 0)

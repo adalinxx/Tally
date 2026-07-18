@@ -58,7 +58,8 @@ struct ChallengeService: Sendable {
 
         guard challenge.boundPeer == peer else { return false }
         guard let outstanding = outstandingNonces.value(forKey: challenge.nonce) else { return false }
-        guard outstanding.matches(challenge), !outstanding.isExpired(at: now) else {
+        guard outstanding.matches(challenge) else { return false }
+        guard !outstanding.isExpired(at: now) else {
             outstandingNonces.removeValue(forKey: challenge.nonce)
             return false
         }

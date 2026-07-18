@@ -275,6 +275,38 @@ struct ChallengeServiceTests {
         #expect(service.outstandingCount == 0)
     }
 
+    @Test("A mismatched peer cannot consume another peer's challenge")
+    func mismatchPreservesOutstandingChallenge() {
+        var service = ChallengeService(config: TallyConfig(challengeDifficulty: 0))
+        let now = ContinuousClock.now
+        let victim = PeerID(publicKey: "victim")
+        let attacker = PeerID(publicKey: "attacker")
+        let challenge = service.issue(for: victim, nonce: testNonce(1), at: now)
+        let mismatch = Challenge(
+            nonce: challenge.nonce,
+            boundPeer: attacker,
+            difficulty: challenge.difficulty,
+            issuedAt: challenge.issuedAt,
+            expiresAfter: challenge.expiresAfter
+        )
+
+        let mismatchAccepted = service.verify(
+            mismatch,
+            solution: Data(),
+            peer: attacker,
+            at: now
+        )
+        let victimAccepted = service.verify(
+            challenge,
+            solution: Data(),
+            peer: victim,
+            at: now
+        )
+
+        #expect(!mismatchAccepted)
+        #expect(victimAccepted)
+    }
+
     @Test("Stored challenges actually expire and are pruned")
     func storedChallengeExpiryAndCleanup() {
         var service = ChallengeService(config: TallyConfig(

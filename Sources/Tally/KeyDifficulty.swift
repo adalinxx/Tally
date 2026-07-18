@@ -21,22 +21,29 @@ public enum KeyDifficulty: Sendable {
     ///
     /// Ed25519 keys travel in two spellings: the raw 64-hex form and the
     /// `ed01`-prefixed Multikey form (2-byte multicodec prefix, 68 hex chars).
-    /// This strips the Multikey prefix down to the raw form; anything else,
-    /// including malformed strings (wrong length or non-hex), passes through
-    /// verbatim, so an opaque or junk key is simply measured as presented
-    /// rather than rejected here. Gates that need validity must check it
-    /// separately; this function only collapses the two spellings of the
-    /// same key onto one canonical string.
+    /// This strips the Multikey prefix and lowercases valid raw hex. Anything
+    /// else, including malformed strings (wrong length or non-hex), passes
+    /// through verbatim, so an opaque or junk key is simply measured as
+    /// presented rather than rejected here. Gates that need validity must
+    /// check it separately; this function only collapses spellings of the same
+    /// key onto one canonical string.
     public static func canonicalRawHex(_ presented: String) -> String {
-        guard presented.hasPrefix("ed01") else { return presented }
-        let raw = presented.dropFirst(4)
-        guard raw.utf8.count == 64,
-              raw.utf8.allSatisfy({ byte in
-                  (0x30...0x39).contains(byte)
-                      || (0x41...0x46).contains(byte)
-                      || (0x61...0x66).contains(byte)
-              }) else { return presented }
-        return String(raw)
+        let raw: Substring
+        if presented.utf8.count == 68,
+           presented.prefix(4).lowercased() == "ed01" {
+            raw = presented.dropFirst(4)
+        } else if presented.utf8.count == 64 {
+            raw = presented[...]
+        } else {
+            return presented
+        }
+        let isHex = raw.utf8.allSatisfy { byte in
+            (0x30...0x39).contains(byte)
+                || (0x41...0x46).contains(byte)
+                || (0x61...0x66).contains(byte)
+        }
+        guard isHex else { return presented }
+        return raw.lowercased()
     }
 
     /// Canonical measure for identity-PoW gates: trailing-zero bits of

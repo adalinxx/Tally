@@ -13,7 +13,7 @@ attributed by its caller.
 | TALLY-006 | Greater send pressure never lowers the admission threshold. |
 | TALLY-007 | Every score component and the final score remain finite and bounded. |
 | TALLY-008 | Challenges are peer-bound, exact, expiring, and consumed before work is credited. |
-| TALLY-009 | Admission and identity gates use the same canonical key-work measure. |
+| TALLY-009 | Valid raw and `ed01` key spellings share one peer identity and key-work measure. |
 | TALLY-010 | Mutable peer-associated state retained by `Tally` is bounded: evidence, request buckets, and outstanding challenges; eviction forgets rather than punishes. |
 | TALLY-011 | Peer reset affects only that peer and preserves lifetime metrics. |
 | TALLY-012 | Credit state never affects evidence, pressure, or admission score. |

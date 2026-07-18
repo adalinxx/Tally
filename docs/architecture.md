@@ -73,7 +73,8 @@ crediting work, preventing replay.
 
 `KeyDifficulty.keyWorkBits(_:)` hashes the canonical raw Ed25519 key and counts
 trailing zero bits. Raw hex and canonical `ed01` Multikey spellings therefore
-measure equally. Key validity remains a caller concern.
+produce the same `PeerID` and measure equally. Key validity remains a caller
+concern.
 
 ## State lifetime
 

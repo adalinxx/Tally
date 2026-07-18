@@ -5,8 +5,9 @@ public struct PeerID: Hashable, Sendable, CustomStringConvertible {
     public let trailingZeroBits: Int
 
     public init(publicKey: String) {
-        self.publicKey = publicKey
-        self.trailingZeroBits = KeyDifficulty.trailingZeroBits(of: publicKey)
+        let canonicalKey = KeyDifficulty.canonicalRawHex(publicKey)
+        self.publicKey = canonicalKey
+        self.trailingZeroBits = KeyDifficulty.trailingZeroBits(of: canonicalKey)
     }
 
     public var description: String { publicKey }

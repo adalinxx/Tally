@@ -33,6 +33,31 @@ public struct Tally: Sendable {
         }
     }
 
+    /// Credits content this node requested from `peer` and verified. Only
+    /// verified, solicited content counts toward `servingPriority`.
+    public func recordUsefulReceived(peer: PeerID, bytes: Int) {
+        guard bytes > 0 else { return }
+        _state.withLock { state in
+            let now = ContinuousClock.now
+            state.mutateEvidence(for: peer, at: now) {
+                $0.recordUsefulReceived(bytes, at: now, halfLife: config.decayHalfLife)
+            }
+            state.metrics.totalUsefulBytesReceived.addSaturating(bytes)
+        }
+    }
+
+    /// Orders peers when a host must choose whom to serve: the decayed bytes
+    /// of verified content the peer served on request, divided by its
+    /// protocol violations. Zero for a peer with no such history.
+    public func servingPriority(for peer: PeerID) -> Double {
+        _state.withLock { state in
+            guard var peerEvidence = state.evidence.value(forKey: peer) else { return 0 }
+            let priority = peerEvidence.servingPriority(at: .now, halfLife: config.decayHalfLife)
+            state.evidence.setValue(peerEvidence, forKey: peer)
+            return priority
+        }
+    }
+
     public func recordProtocolViolation(peer: PeerID) {
         _state.withLock { state in
             let now = ContinuousClock.now
@@ -146,7 +171,17 @@ extension Tally {
         ) {
             var peerEvidence = evidence.value(forKey: peer) ?? PeerEvidence(now: now)
             mutation(&peerEvidence)
-            evidence.setValue(peerEvidence, forKey: peer)
+            // At capacity the peer with the least verified-content credit goes
+            // first (least recently used among equals), so a flood of new
+            // identities cannot erase the record of peers that served us.
+            evidence.setValue(peerEvidence, forKey: peer) { storage, accessOrder in
+                storage.min { lhs, rhs in
+                    if lhs.value.usefulBytesReceived != rhs.value.usefulBytesReceived {
+                        return lhs.value.usefulBytesReceived < rhs.value.usefulBytesReceived
+                    }
+                    return (accessOrder[lhs.key] ?? 0) < (accessOrder[rhs.key] ?? 0)
+                }?.key
+            }
         }
 
         mutating func admissionScore(

@@ -43,73 +43,107 @@ struct ServingPriorityTests {
         tally.recordUsefulReceived(peer: peer, bytes: -5)
         #expect(tally.servingPriority(for: peer) == 0)
         #expect(tally.metrics.totalUsefulBytesReceived == 0)
-        #expect(tally.peerCount == 0)
     }
 
-    @Test("protocol violations divide priority, like the admission score")
+    @Test("protocol violations divide priority")
     func violationsDemote() {
         let start = ContinuousClock.now
-        var evidence = PeerEvidence(now: start)
-        evidence.recordUsefulReceived(1_000, at: start, halfLife: 60)
-        let clean = evidence.servingPriority(at: start, halfLife: 60)
-        evidence.recordProtocolViolation(at: start, halfLife: 60)
-        let violated = evidence.servingPriority(at: start, halfLife: 60)
-        #expect(abs(clean - 1_000) < 0.000_001)
-        #expect(abs(violated - 500) < 0.000_001)
+        var state = Tally.State(config: TallyConfig(decayHalfLife: 60))
+        let peer = PeerID(publicKey: "peer")
+        state.recordUseful(peer: peer, bytes: 1_000, at: start, halfLife: 60)
+        #expect(abs(state.servingPriority(for: peer, at: start, halfLife: 60) - 1_000) < 0.000_001)
+        state.mutateEvidence(for: peer, at: start) {
+            $0.recordProtocolViolation(at: start, halfLife: 60)
+        }
+        #expect(abs(state.servingPriority(for: peer, at: start, halfLife: 60) - 500) < 0.000_001)
     }
 
-    @Test("useful credit decays on the evidence half-life")
+    @Test("credit decays on the evidence half-life")
     func creditDecays() {
         let start = ContinuousClock.now
-        var evidence = PeerEvidence(now: start)
-        evidence.recordUsefulReceived(1_000, at: start, halfLife: 10)
-        let later = evidence.servingPriority(at: start.advanced(by: .seconds(10)), halfLife: 10)
-        #expect(abs(later - 500) < 0.000_001)
+        var credit = UsefulCredit(now: start)
+        credit.record(1_000, at: start, halfLife: 10)
+        #expect(abs(credit.value(at: start.advanced(by: .seconds(10)), halfLife: 10) - 500) < 0.000_001)
+        credit.record(500, at: start.advanced(by: .seconds(10)), halfLife: 10)
+        #expect(abs(credit.value(at: start.advanced(by: .seconds(10)), halfLife: 10) - 1_000) < 0.000_001)
     }
 
-    @Test("every other mutation also decays useful credit")
-    func otherMutationsDecayCredit() {
+    @Test("asking for a peer's priority changes no record")
+    func priorityReadIsPure() {
         let start = ContinuousClock.now
-        let later = start.advanced(by: .seconds(10))
-        var evidence = PeerEvidence(now: start)
-        evidence.recordUsefulReceived(800, at: start, halfLife: 10)
-        evidence.recordSent(1, at: later, halfLife: 10)
-        #expect(abs(evidence.usefulBytesReceived - 400) < 0.000_001)
+        var state = Tally.State(config: TallyConfig(decayHalfLife: 60))
+        let peer = PeerID(publicKey: "peer")
+        state.recordUseful(peer: peer, bytes: 1_000, at: start, halfLife: 60)
+        let later = start.advanced(by: .seconds(60))
+        let first = state.servingPriority(for: peer, at: later, halfLife: 60)
+        let second = state.servingPriority(for: peer, at: later, halfLife: 60)
+        #expect(first == second)
+        #expect(state.credit.value(forKey: peer)?.lastUpdate == start)
     }
 
-    @Test("at capacity, peers without credit are evicted before helpful ones")
-    func evictionKeepsHelpfulPeers() {
-        // Capacity = maxPeers × 4 = 4 evidence records.
+    @Test("at capacity, the credit worth least now is dropped, however large it once was")
+    func creditEvictionUsesDecayedValue() {
+        let start = ContinuousClock.now
+        let halfLife = 60.0
+        // Capacity = maxPeers × 4 = 4 credit records.
+        var state = Tally.State(config: TallyConfig(decayHalfLife: halfLife, maxPeers: 1))
+        let stale = PeerID(publicKey: "stale")
+        state.recordUseful(peer: stale, bytes: 1_000_000, at: start, halfLife: halfLife)
+        let later = start.advanced(by: .seconds(3_600))
+        let fresh = (0..<3).map { PeerID(publicKey: "fresh-\($0)") }
+        for peer in fresh { state.recordUseful(peer: peer, bytes: 10_000, at: later, halfLife: halfLife) }
+        let newcomer = PeerID(publicKey: "newcomer")
+        state.recordUseful(peer: newcomer, bytes: 10_000, at: later, halfLife: halfLife)
+
+        #expect(state.credit.count == 4)
+        #expect(state.credit.value(forKey: stale) == nil)
+        for peer in fresh + [newcomer] { #expect(state.credit.value(forKey: peer) != nil) }
+    }
+
+    @Test("a flood of new identities cannot erase a helpful peer's credit")
+    func floodKeepsCredit() {
         let tally = Tally(config: TallyConfig(maxPeers: 1))
         let helpful = PeerID(publicKey: "helpful")
         tally.recordUsefulReceived(peer: helpful, bytes: 1_000)
-        // A flood of new identities with only raw traffic.
         for index in 0..<50 {
-            tally.recordReceived(peer: PeerID(publicKey: "flood-\(index)"), bytes: 1)
+            let peer = PeerID(publicKey: "flood-\(index)")
+            tally.recordReceived(peer: peer, bytes: 1)
+            tally.recordProtocolViolation(peer: peer)
         }
-        #expect(tally.peerCount == 4)
         #expect(tally.servingPriority(for: helpful) > 0)
     }
 
-    @Test("without credit anywhere, eviction stays least-recently-used")
-    func evictionWithoutCreditIsLRU() {
+    @Test("credit never decides whose admission evidence survives")
+    func creditDoesNotAffectAdmissionEviction() {
+        let tally = Tally(config: TallyConfig(maxPeers: 1))
+        // Every credit slot is held.
+        for index in 0..<4 {
+            tally.recordUsefulReceived(peer: PeerID(publicKey: "credited-\(index)"), bytes: 100)
+        }
+        // Admission evidence stays least-recently-used: five newcomers, the
+        // oldest is evicted, the newest four keep their evidence.
+        let newcomers = (0..<5).map { PeerID(publicKey: "newcomer-\($0)") }
+        for peer in newcomers { tally.recordReceived(peer: peer, bytes: 100) }
+        #expect(tally.admissionScore(for: newcomers[0]) == 0)
+        for peer in newcomers.dropFirst() { #expect(tally.admissionScore(for: peer) > 0) }
+    }
+
+    @Test("without credit, admission eviction is unchanged least-recently-used")
+    func admissionEvictionIsLRU() {
         let tally = Tally(config: TallyConfig(maxPeers: 1))
         let peers = (0..<5).map { PeerID(publicKey: "peer-\($0)") }
         for peer in peers { tally.recordReceived(peer: peer, bytes: 100) }
         #expect(tally.peerCount == 4)
-        // Received bytes give a present peer a positive admission score; an
-        // evicted one has no record and scores zero.
         #expect(tally.admissionScore(for: peers[0]) == 0)
         for peer in peers.dropFirst() { #expect(tally.admissionScore(for: peer) > 0) }
     }
 
-    @Test("when every record has credit, a newcomer without credit is the one dropped")
-    func newcomerDroppedWhenAllHaveCredit() {
-        let tally = Tally(config: TallyConfig(maxPeers: 1))
-        let helpful = (0..<4).map { PeerID(publicKey: "helpful-\($0)") }
-        for peer in helpful { tally.recordUsefulReceived(peer: peer, bytes: 100) }
-        tally.recordReceived(peer: PeerID(publicKey: "newcomer"), bytes: 1)
-        #expect(tally.peerCount == 4)
-        for peer in helpful { #expect(tally.servingPriority(for: peer) > 0) }
+    @Test("resetting a peer clears its credit")
+    func resetClearsCredit() {
+        let tally = Tally()
+        let peer = PeerID(publicKey: "peer")
+        tally.recordUsefulReceived(peer: peer, bytes: 100)
+        tally.resetPeer(peer)
+        #expect(tally.servingPriority(for: peer) == 0)
     }
 }
